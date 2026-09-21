@@ -1,0 +1,9 @@
+{
+  "id": "kempfs-simple-mind-map",
+  "name": "The Kempf Simple Mind Map",
+  "version": "0.1.5",
+  "minAppVersion": "1.5.0",
+  "description": "File-based, keyboard-, mouse-, and touch-driven mind maps in an Obsidian canvas-style view.",
+  "author": "Kempf",
+  "isDesktopOnly": false
+}
