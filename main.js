@@ -15,8 +15,10 @@ const NODE_COLORS = {
   indigo: { hex: "#6366f1", text: "#ffffff" }
 };
 const NODE_COLOR_NAMES = Object.keys(NODE_COLORS);
+const BACKGROUND_OPTIONS = { system: "Obsidian default", dark: "Dark", paper: "Paper" };
+const BACKGROUND_NAMES = Object.keys(BACKGROUND_OPTIONS);
 const SPACING_DEFAULTS = { levelSpacing: 100, siblingSpacing: 100, nodePadding: 12, trunkSpacing: 48 };
-const SPACING_COMPACT = { levelSpacing: 65, siblingSpacing: 60, nodePadding: 4, trunkSpacing: 30 };
+const SPACING_COMPACT = { levelSpacing: 65, siblingSpacing: 60, nodePadding: 7, trunkSpacing: 30 };
 const NODE_STRENGTH_DEFAULTS = {
   darkRootStrength: 100,
   darkLevel1Strength: 75,
@@ -35,14 +37,25 @@ function mixHexColor(color, background, amount) {
   return `#${parts.join("")}`;
 }
 
+function normalizeBackground(background) {
+  if (background === "light") return "paper";
+  return BACKGROUND_NAMES.includes(background) ? background : "system";
+}
+
+function usesLightPalette(background) {
+  const normalized = normalizeBackground(background);
+  return normalized === "paper" || (normalized === "system" && document.body?.classList.contains("theme-light"));
+}
+
 function createBlankMap(appearance = {}, centralNodeText = "Central idea", centralNodeNotes = "") {
   const root = { id: "root", text: centralNodeText, parentId: null, childIds: [], collapsed: false };
   if (centralNodeNotes) root.notes = centralNodeNotes;
   return {
     version: 1,
-    appearance: Object.assign({ background: "dark", highlight: "blue", layout: "right", dimUnrelated: true, dimStrength: 50, randomBranchColors: false }, SPACING_DEFAULTS, NODE_STRENGTH_DEFAULTS, appearance),
+    appearance: Object.assign({ background: "system", highlight: "blue", layout: "right", dimUnrelated: true, dimStrength: 50, randomBranchColors: false }, SPACING_DEFAULTS, NODE_STRENGTH_DEFAULTS, appearance),
     rootIds: [root.id],
-    nodes: { [root.id]: root }
+    nodes: { [root.id]: root },
+    relationships: []
   };
 }
 
@@ -93,6 +106,31 @@ function normalizeSingleRootMap(map, syntheticRootText = "Central idea") {
   }
   if (visited.size !== entries.length) return null;
 
+  const relationships = [];
+  const relationshipPairs = new Set();
+  const relationshipIds = new Set();
+  if (Array.isArray(map.relationships)) {
+    map.relationships.forEach((relationship, index) => {
+      if (!relationship || typeof relationship !== "object") return;
+      const fromId = typeof relationship.fromId === "string" ? relationship.fromId : "";
+      const toId = typeof relationship.toId === "string" ? relationship.toId : "";
+      if (!fromId || !toId || fromId === toId || !map.nodes[fromId] || !map.nodes[toId]) return;
+      const pairKey = [fromId, toId].sort().join("\u0000");
+      if (relationshipPairs.has(pairKey)) return;
+      relationshipPairs.add(pairKey);
+      let id = typeof relationship.id === "string" && relationship.id.trim() ? relationship.id.trim() : `relationship-${index + 1}`;
+      let suffix = 2;
+      const baseId = id;
+      while (relationshipIds.has(id)) {
+        id = `${baseId}-${suffix}`;
+        suffix += 1;
+      }
+      relationshipIds.add(id);
+      relationships.push({ id, fromId, toId });
+    });
+  }
+  map.relationships = relationships;
+
   let rootId = rootIds[0];
   if (rootIds.length > 1) {
     rootId = "imported-root";
@@ -110,7 +148,7 @@ function normalizeSingleRootMap(map, syntheticRootText = "Central idea") {
   map.rootIds = [rootId];
 
   const appearance = map.appearance && typeof map.appearance === "object" && !Array.isArray(map.appearance) ? map.appearance : {};
-  if (!["dark", "light"].includes(appearance.background)) delete appearance.background;
+  appearance.background = normalizeBackground(appearance.background);
   if (!NODE_COLOR_NAMES.includes(appearance.highlight)) delete appearance.highlight;
   if (!["right", "left", "down", "up", "radial"].includes(appearance.layout)) delete appearance.layout;
   if (typeof appearance.dimUnrelated !== "boolean") delete appearance.dimUnrelated;
@@ -124,7 +162,7 @@ function normalizeSingleRootMap(map, syntheticRootText = "Central idea") {
   clampSetting("dimStrength", 0, 90);
   clampSetting("levelSpacing", 65, 300);
   clampSetting("siblingSpacing", 60, 300);
-  clampSetting("nodePadding", 4, 24);
+  clampSetting("nodePadding", 7, 24);
   clampSetting("trunkSpacing", 30, 70);
   Object.keys(NODE_STRENGTH_DEFAULTS).forEach((key) => clampSetting(key, 0, 100));
   map.appearance = appearance;
@@ -339,6 +377,32 @@ class DeleteSubtreeConfirmModal extends Modal {
   }
 }
 
+class OutlineExportWarningModal extends Modal {
+  constructor(app, format, onConfirm) {
+    super(app);
+    this.format = format;
+    this.onConfirm = onConfirm;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h2", { text: `Export ${this.format}?` });
+    contentEl.createEl("p", {
+      text: `${this.format} export includes node titles and hierarchy only. Notes, relationships, folding, locks, colors, layout, and other appearance settings are omitted.`
+    });
+    new Setting(contentEl)
+      .addButton((button) => button.setButtonText("Continue export").setCta().onClick(() => {
+        this.close();
+        this.onConfirm();
+      }))
+      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()));
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
 class MarkdownFileSuggestModal extends FuzzySuggestModal {
   constructor(app, onChoose) {
     super(app);
@@ -391,8 +455,7 @@ class MapSettingsModal extends Modal {
     this.renderPreview();
 
     new Setting(controls).setName("Background").addDropdown((dropdown) => {
-      dropdown.addOption("dark", "Black");
-      dropdown.addOption("light", "White");
+      Object.entries(BACKGROUND_OPTIONS).forEach(([value, label]) => dropdown.addOption(value, label));
       dropdown.setValue(this.values.background).onChange((value) => { this.values.background = value; this.renderPreview(); });
     });
 
@@ -431,12 +494,12 @@ class MapSettingsModal extends Modal {
 
     controls.createEl("h3", { text: "Node color strength", cls: "cmm-spacing-heading" });
     controls.createEl("p", { text: "Choose how strongly each node level uses its branch color. The rest is blended with the map background.", cls: "setting-item-description" });
-    controls.createEl("h4", { text: "Black background", cls: "cmm-node-strength-heading" });
+    controls.createEl("h4", { text: "Dark background", cls: "cmm-node-strength-heading" });
     this.addStrengthSlider(controls, "Central node", "darkRootStrength");
     this.addStrengthSlider(controls, "Level 1", "darkLevel1Strength");
     this.addStrengthSlider(controls, "Level 2", "darkLevel2Strength");
     this.addStrengthSlider(controls, "Level 3 and deeper", "darkDeepStrength");
-    controls.createEl("h4", { text: "White background", cls: "cmm-node-strength-heading" });
+    controls.createEl("h4", { text: "Light and paper backgrounds", cls: "cmm-node-strength-heading" });
     this.addStrengthSlider(controls, "Central node", "lightRootStrength");
     this.addStrengthSlider(controls, "Level 1", "lightLevel1Strength");
     this.addStrengthSlider(controls, "Level 2", "lightLevel2Strength");
@@ -445,7 +508,7 @@ class MapSettingsModal extends Modal {
     controls.createEl("h3", { text: "Map spacing", cls: "cmm-spacing-heading" });
     this.addSpacingSlider(controls, "Level spacing", "Distance between parent and child levels. 100 is the original spacing.", "levelSpacing", 65, 300, 5);
     this.addSpacingSlider(controls, "Sibling spacing", "Distance between nodes at the same level. 100 is the original spacing.", "siblingSpacing", 60, 300, 5);
-    this.addSpacingSlider(controls, "Node padding", "Space around text inside each node, in pixels.", "nodePadding", 4, 24, 1);
+    this.addSpacingSlider(controls, "Node padding", "Space around text inside each node, in pixels.", "nodePadding", 7, 24, 1);
     this.addSpacingSlider(controls, "Connector trunk spacing", "Percentage of the path used before connectors curve apart.", "trunkSpacing", 30, 70, 2);
 
     new Setting(controls)
@@ -521,11 +584,13 @@ class MapSettingsModal extends Modal {
     this.previewPanCleanup?.();
     this.previewPanCleanup = null;
     this.previewEl.empty();
-    const dark = this.values.background !== "light";
+    const dark = !usesLightPalette(this.values.background);
     const color = NODE_COLORS[this.values.highlight] || NODE_COLORS.blue;
     const accent = color.hex;
     this.previewEl.toggleClass("is-dark", dark);
     this.previewEl.toggleClass("is-light", !dark);
+    this.previewEl.toggleClass("is-paper", normalizeBackground(this.values.background) === "paper");
+    this.previewEl.toggleClass("is-system", normalizeBackground(this.values.background) === "system");
     this.previewEl.style.setProperty("--cmm-preview-accent", accent);
     const sampleNodes = {
       root: { id: "root", text: "Main", parentId: null, childIds: ["plan", "build"], collapsed: false },
@@ -585,7 +650,8 @@ class MapSettingsModal extends Modal {
       const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
       rect.setAttribute("x", position.x); rect.setAttribute("y", position.y); rect.setAttribute("width", size.width); rect.setAttribute("height", size.height); rect.setAttribute("rx", "10");
       rect.setAttribute("class", position.depth === 0 ? "cmm-preview-root" : "cmm-preview-node");
-      const background = dark ? "#000000" : "#ffffff";
+      const normalizedBackground = normalizeBackground(this.values.background);
+      const background = normalizedBackground === "paper" ? "#f7f3e8" : dark ? "#11151c" : "#ffffff";
       const prefix = dark ? "dark" : "light";
       const strengthKey = position.depth === 0 ? `${prefix}RootStrength` : position.depth === 1 ? `${prefix}Level1Strength` : position.depth === 2 ? `${prefix}Level2Strength` : `${prefix}DeepStrength`;
       rect.style.fill = mixHexColor(accent, background, this.values[strengthKey] / 100);
@@ -747,6 +813,7 @@ class KempfSimpleMindMapView extends TextFileView {
     this.searchPanelEl = null;
     this.searchMatches = [];
     this.searchIndex = -1;
+    this.relationshipSourceId = null;
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -775,6 +842,7 @@ class KempfSimpleMindMapView extends TextFileView {
     this.redoStack = [];
     this.selectedId = null;
     this.focusedId = null;
+    this.relationshipSourceId = null;
     this.syncAppearanceControls();
     this.render();
     if (this.viewport) this.centerMap();
@@ -786,6 +854,7 @@ class KempfSimpleMindMapView extends TextFileView {
     this.redoStack = [];
     this.selectedId = null;
     this.focusedId = null;
+    this.relationshipSourceId = null;
     this.render();
   }
 
@@ -821,6 +890,7 @@ class KempfSimpleMindMapView extends TextFileView {
     this.mapData = JSON.parse(snapshot);
     this.selectedId = null;
     this.focusedId = null;
+    this.relationshipSourceId = null;
     this.syncAppearanceControls();
     await this.saveMap();
     this.render();
@@ -854,6 +924,12 @@ class KempfSimpleMindMapView extends TextFileView {
     this.contentEl.addClass("kempfs-simple-mind-map-view");
     const appearance = this.getAppearance();
     this.applyAppearance(appearance.background, appearance.highlight);
+    this.registerEvent(this.app.workspace.on("css-change", () => {
+      const current = this.getAppearance();
+      if (current.background !== "system") return;
+      this.applyAppearance(current.background, current.highlight);
+      this.render();
+    }));
 
     const toolbar = this.contentEl.createDiv({ cls: "cmm-toolbar" });
     if (this.isMobile) toolbar.addClass("is-mobile");
@@ -1153,10 +1229,10 @@ class KempfSimpleMindMapView extends TextFileView {
   }
 
   applyAppearance(background, highlight) {
-    const safeBackground = background === "light" ? "light" : "dark";
+    const safeBackground = normalizeBackground(background);
     const safeHighlight = NODE_COLORS[highlight] ? highlight : "blue";
-    this.contentEl.removeClass("cmm-theme-dark", "cmm-theme-light");
-    this.contentEl.addClass(safeBackground === "light" ? "cmm-theme-light" : "cmm-theme-dark");
+    this.contentEl.removeClass("cmm-theme-system", "cmm-theme-dark", "cmm-theme-light", "cmm-theme-paper");
+    this.contentEl.addClass(`cmm-theme-${safeBackground}`);
     this.contentEl.style.setProperty("--cmm-accent", NODE_COLORS[safeHighlight].hex);
     this.contentEl.style.setProperty("--cmm-root-text", NODE_COLORS[safeHighlight].text);
     const appearance = Object.assign({}, NODE_STRENGTH_DEFAULTS, this.mapData?.appearance || {});
@@ -1173,6 +1249,7 @@ class KempfSimpleMindMapView extends TextFileView {
   getAppearance() {
     if (!this.mapData) this.mapData = createBlankMap(this.plugin.getDefaultAppearance());
     this.mapData.appearance = Object.assign({ dimUnrelated: true, dimStrength: 50 }, SPACING_DEFAULTS, NODE_STRENGTH_DEFAULTS, this.plugin.getDefaultAppearance(), this.mapData.appearance || {});
+    this.mapData.appearance.background = normalizeBackground(this.mapData.appearance.background);
     if (!["right", "left", "down", "up", "radial"].includes(this.mapData.appearance.layout)) this.mapData.appearance.layout = "right";
     return this.mapData.appearance;
   }
@@ -1183,7 +1260,7 @@ class KempfSimpleMindMapView extends TextFileView {
   }
 
   async setAppearance(background, highlight, layout) {
-    const safeBackground = background === "light" ? "light" : "dark";
+    const safeBackground = normalizeBackground(background);
     const safeHighlight = NODE_COLOR_NAMES.includes(highlight) ? highlight : "blue";
     const allowedLayouts = ["right", "left", "down", "up", "radial"];
     const safeLayout = allowedLayouts.includes(layout) ? layout : "right";
@@ -1225,6 +1302,88 @@ class KempfSimpleMindMapView extends TextFileView {
     }
     await this.saveMap();
     this.render();
+  }
+
+  relationshipsForNode(nodeId) {
+    return (this.map.relationships || []).filter((relationship) => relationship.fromId === nodeId || relationship.toId === nodeId);
+  }
+
+  startRelationship(nodeId) {
+    if (!this.getNode(nodeId) || !this.ensureEditable(nodeId)) return;
+    this.relationshipSourceId = nodeId;
+    this.selectedId = nodeId;
+    this.render();
+    new Notice("Click another node to create the relationship. Click empty space or press Escape to cancel.");
+  }
+
+  cancelRelationship(showNotice = false) {
+    if (!this.relationshipSourceId) return false;
+    this.relationshipSourceId = null;
+    this.render();
+    if (showNotice) new Notice("Relationship creation canceled.");
+    return true;
+  }
+
+  async createRelationship(fromId, toId) {
+    if (!fromId || !toId || fromId === toId) {
+      new Notice("Choose a different node for the relationship.");
+      return;
+    }
+    if (!this.getNode(fromId) || !this.getNode(toId)) return;
+    if (!this.ensureEditable(fromId) || !this.ensureEditable(toId)) {
+      this.relationshipSourceId = null;
+      this.render();
+      return;
+    }
+    const duplicate = (this.map.relationships || []).some((relationship) =>
+      (relationship.fromId === fromId && relationship.toId === toId)
+      || (relationship.fromId === toId && relationship.toId === fromId));
+    if (duplicate) {
+      this.relationshipSourceId = null;
+      this.render();
+      new Notice("Those nodes are already linked.");
+      return;
+    }
+    this.recordUndoState();
+    if (!Array.isArray(this.map.relationships)) this.map.relationships = [];
+    this.map.relationships.push({
+      id: `relationship-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      fromId,
+      toId
+    });
+    this.relationshipSourceId = null;
+    this.selectedId = toId;
+    await this.saveMap();
+    this.render();
+    new Notice("Relationship created.");
+  }
+
+  async removeRelationship(relationshipId) {
+    const relationship = (this.map.relationships || []).find((entry) => entry.id === relationshipId);
+    if (!relationship) return;
+    if (!this.ensureEditable(relationship.fromId) || !this.ensureEditable(relationship.toId)) return;
+    this.recordUndoState();
+    this.map.relationships = this.map.relationships.filter((entry) => entry.id !== relationshipId);
+    await this.saveMap();
+    this.render();
+    new Notice("Relationship removed.");
+  }
+
+  showRelationshipMenu(event, relationshipId) {
+    const relationship = (this.map.relationships || []).find((entry) => entry.id === relationshipId);
+    if (!relationship) return;
+    const menu = new Menu();
+    menu.addItem((item) => item
+      .setTitle("Remove relationship")
+      .setIcon("unlink")
+      .onClick(() => this.removeRelationship(relationshipId)));
+    menu.showAtMouseEvent(event);
+  }
+
+  showMobileRelationshipSheet(relationshipId) {
+    this.showMobileSheet("Relationship", [
+      { label: "Remove relationship", danger: true, action: () => this.removeRelationship(relationshipId) }
+    ]);
   }
 
   isVisibleInFocus(nodeId) {
@@ -1784,6 +1943,7 @@ class KempfSimpleMindMapView extends TextFileView {
       const target = this.getNode(id);
       if (!target) return;
       [...target.childIds].forEach(removeSubtree);
+      this.map.relationships = (this.map.relationships || []).filter((relationship) => relationship.fromId !== id && relationship.toId !== id);
       delete this.map.nodes[id];
     };
     if (node.parentId) {
@@ -1817,6 +1977,22 @@ class KempfSimpleMindMapView extends TextFileView {
       .setIcon("clipboard-paste")
       .setDisabled(!this.plugin.branchClipboard)
       .onClick(() => this.pasteBranch(nodeId)));
+    menu.addItem((item) => item
+      .setTitle(this.relationshipSourceId === nodeId ? "Cancel relationship link" : "Create relationship link")
+      .setIcon(this.relationshipSourceId === nodeId ? "x" : "link")
+      .onClick(() => this.relationshipSourceId === nodeId ? this.cancelRelationship(true) : this.startRelationship(nodeId)));
+    const nodeRelationships = this.relationshipsForNode(nodeId);
+    if (nodeRelationships.length) {
+      menu.addItem((item) => {
+        item.setTitle("Remove relationship link").setIcon("unlink");
+        const submenu = item.setSubmenu();
+        nodeRelationships.forEach((relationship) => {
+          const otherId = relationship.fromId === nodeId ? relationship.toId : relationship.fromId;
+          const otherName = this.getNode(otherId)?.text || "Missing node";
+          submenu.addItem((choice) => choice.setTitle(otherName).onClick(() => this.removeRelationship(relationship.id)));
+        });
+      });
+    }
     if (node.childIds.length) {
       menu.addItem((item) => item.setTitle(node.collapsed ? "Expand children" : "Fold children").setIcon(node.collapsed ? "chevrons-right" : "chevrons-down").onClick(() => this.toggleCollapsed(nodeId)));
       menu.addItem((item) => {
@@ -1869,6 +2045,12 @@ class KempfSimpleMindMapView extends TextFileView {
     items.push({ label: "Copy node", action: () => this.copyNode(nodeId) });
     items.push({ label: "Copy branch", action: () => this.copyBranch(nodeId) });
     items.push({ label: "Paste as child", disabled: !this.plugin.branchClipboard, action: () => this.pasteBranch(nodeId) });
+    items.push({ label: this.relationshipSourceId === nodeId ? "Cancel relationship link" : "Create relationship link", action: () => this.relationshipSourceId === nodeId ? this.cancelRelationship(true) : this.startRelationship(nodeId) });
+    this.relationshipsForNode(nodeId).forEach((relationship) => {
+      const otherId = relationship.fromId === nodeId ? relationship.toId : relationship.fromId;
+      const otherName = this.getNode(otherId)?.text || "Missing node";
+      items.push({ label: `Remove link to ${otherName}`, danger: true, action: () => this.removeRelationship(relationship.id) });
+    });
     if (node.childIds.length) items.push({ label: node.collapsed ? "Expand children" : "Fold children", action: () => this.toggleCollapsed(nodeId) });
     if (node.childIds.length) items.push({ label: "Sort children", action: () => this.showMobileSortSheet(nodeId) });
     items.push({ label: "Change branch color", action: () => this.showMobileColorSheet(nodeId) });
@@ -1921,12 +2103,13 @@ class KempfSimpleMindMapView extends TextFileView {
   }
 
   showMobileImportSheet() {
+    const destination = this.outlineImportDestination();
     this.showMobileSheet("Import", [
-      { label: "Markdown from vault", action: () => this.chooseMarkdownImport() },
-      { label: "Markdown from device", action: () => this.chooseMarkdownSystemImport() },
-      { label: "OPML", action: () => this.chooseOPMLImport() },
-      { label: "The Kempf Simple Mind Map (.ksmm)", action: () => this.chooseKSMMImport() },
-      { label: "JSON backup", action: () => this.chooseJSONBackupImport() }
+      { label: `Markdown from vault → ${destination}`, action: () => this.chooseMarkdownImport() },
+      { label: `Markdown from device → ${destination}`, action: () => this.chooseMarkdownSystemImport() },
+      { label: `OPML → ${destination}`, action: () => this.chooseOPMLImport() },
+      { label: "The Kempf Simple Mind Map (.ksmm) → new map", action: () => this.chooseKSMMImport() },
+      { label: "JSON backup → new map", action: () => this.chooseJSONBackupImport() }
     ]);
   }
 
@@ -1946,8 +2129,7 @@ class KempfSimpleMindMapView extends TextFileView {
   showMobileAppearanceSheet() {
     const appearance = this.getAppearance();
     this.showMobileSheet("Quick appearance", [
-      { label: `${appearance.background === "dark" ? "✓ " : ""}Black background`, action: () => this.applyQuickMapSetting("background", "dark") },
-      { label: `${appearance.background === "light" ? "✓ " : ""}White background`, action: () => this.applyQuickMapSetting("background", "light") },
+      ...Object.entries(BACKGROUND_OPTIONS).map(([value, label]) => ({ label: `${appearance.background === value ? "✓ " : ""}${label}`, action: () => this.applyQuickMapSetting("background", value) })),
       { separator: true },
       ...[
         ["right", "Right-facing"], ["left", "Left-facing"], ["down", "Down-facing"], ["up", "Up-facing"], ["radial", "Radial"]
@@ -1967,11 +2149,14 @@ class KempfSimpleMindMapView extends TextFileView {
     menu.addItem((item) => {
       item.setTitle("Import").setIcon("file-input");
       const submenu = item.setSubmenu();
+      submenu.addItem((heading) => heading.setTitle(`Outline destination: ${this.outlineImportDestination()}`).setDisabled(true));
+      submenu.addSeparator();
       submenu.addItem((subitem) => subitem.setTitle("Markdown from vault").onClick(() => this.chooseMarkdownImport()));
       submenu.addItem((subitem) => subitem.setTitle("Markdown from computer").onClick(() => this.chooseMarkdownSystemImport()));
       submenu.addItem((subitem) => subitem.setTitle("OPML").onClick(() => this.chooseOPMLImport()));
-      submenu.addItem((subitem) => subitem.setTitle("The Kempf Simple Mind Map (.ksmm)").onClick(() => this.chooseKSMMImport()));
-      submenu.addItem((subitem) => subitem.setTitle("JSON backup").onClick(() => this.chooseJSONBackupImport()));
+      submenu.addSeparator();
+      submenu.addItem((subitem) => subitem.setTitle("The Kempf Simple Mind Map (.ksmm) → new map").onClick(() => this.chooseKSMMImport()));
+      submenu.addItem((subitem) => subitem.setTitle("JSON backup → new map").onClick(() => this.chooseJSONBackupImport()));
     });
     menu.addItem((item) => {
       item.setTitle("Export").setIcon("file-output");
@@ -1999,7 +2184,7 @@ class KempfSimpleMindMapView extends TextFileView {
       const submenu = item.setSubmenu();
       const appearance = this.getAppearance();
       submenu.addItem((heading) => heading.setTitle("Background").setDisabled(true));
-      [{ value: "dark", label: "Black" }, { value: "light", label: "White" }].forEach(({ value, label }) => {
+      Object.entries(BACKGROUND_OPTIONS).forEach(([value, label]) => {
         submenu.addItem((choice) => choice
           .setTitle(label)
           .setChecked(appearance.background === value)
@@ -2041,7 +2226,7 @@ class KempfSimpleMindMapView extends TextFileView {
     }
     const current = this.getAppearance();
     const next = {
-      background: values.background === "light" ? "light" : "dark",
+      background: normalizeBackground(values.background),
       highlight: NODE_COLOR_NAMES.includes(values.highlight) ? values.highlight : "blue",
       layout: ["right", "left", "down", "up", "radial"].includes(values.layout) ? values.layout : "right",
       dimUnrelated: values.dimUnrelated !== false,
@@ -2049,7 +2234,7 @@ class KempfSimpleMindMapView extends TextFileView {
       randomBranchColors: values.randomBranchColors === true,
       levelSpacing: Math.min(300, Math.max(65, Math.round(Number(values.levelSpacing) || SPACING_DEFAULTS.levelSpacing))),
       siblingSpacing: Math.min(300, Math.max(60, Math.round(Number(values.siblingSpacing) || SPACING_DEFAULTS.siblingSpacing))),
-      nodePadding: Math.min(24, Math.max(4, Math.round(Number(values.nodePadding) || SPACING_DEFAULTS.nodePadding))),
+      nodePadding: Math.min(24, Math.max(7, Math.round(Number(values.nodePadding) || SPACING_DEFAULTS.nodePadding))),
       trunkSpacing: Math.min(70, Math.max(30, Math.round(Number(values.trunkSpacing) || SPACING_DEFAULTS.trunkSpacing)))
     };
     Object.keys(NODE_STRENGTH_DEFAULTS).forEach((key) => {
@@ -2078,10 +2263,72 @@ class KempfSimpleMindMapView extends TextFileView {
     }).open();
   }
 
+  isBlankMap() {
+    const roots = this.map.rootIds.map((id) => this.getNode(id)).filter(Boolean);
+    return roots.length === 1 && roots[0].text === "Central idea" && !roots[0].notes && roots[0].childIds.length === 0 && !(this.map.relationships || []).length;
+  }
+
+  outlineImportDestination() {
+    if (this.isBlankMap()) return "replace this blank map";
+    const root = this.getNode(this.map.rootIds[0]);
+    const name = String(root?.text || "central node").trim();
+    const shortened = name.length > 28 ? `${name.slice(0, 27)}…` : name;
+    return `under “${shortened}”`;
+  }
+
   chooseMarkdownSystemImport() {
     this.chooseLocalTextFile(".md,.markdown,text/markdown,text/plain", async (file, source) => {
       await this.importMarkdownSource(source, file.name);
     });
+  }
+
+  prepareOutlineImport(imported, syntheticRootText, replaceBlankMap = false) {
+    const normalized = normalizeSingleRootMap(imported, syntheticRootText);
+    if (!normalized) throw new Error("The imported outline is too large, too deeply nested, or structurally invalid.");
+
+    const candidate = JSON.parse(this.mapSnapshot());
+    const usedIds = new Set(Object.keys(candidate.nodes));
+    const idMap = new Map();
+    let sequence = 0;
+    Object.keys(normalized.nodes).forEach((oldId) => {
+      let newId;
+      do {
+        newId = `imported-${Date.now()}-${sequence}-${Math.random().toString(36).slice(2, 8)}`;
+        sequence += 1;
+      } while (usedIds.has(newId));
+      usedIds.add(newId);
+      idMap.set(oldId, newId);
+    });
+
+    const importedNodes = {};
+    Object.entries(normalized.nodes).forEach(([oldId, sourceNode]) => {
+      const id = idMap.get(oldId);
+      const node = JSON.parse(JSON.stringify(sourceNode));
+      node.id = id;
+      node.parentId = sourceNode.parentId ? idMap.get(sourceNode.parentId) : null;
+      node.childIds = sourceNode.childIds.map((childId) => idMap.get(childId));
+      if (Array.isArray(sourceNode.manualChildIds)) node.manualChildIds = sourceNode.manualChildIds.map((childId) => idMap.get(childId));
+      importedNodes[id] = node;
+    });
+    const importedRootId = idMap.get(normalized.rootIds[0]);
+
+    if (replaceBlankMap) {
+      candidate.nodes = importedNodes;
+      candidate.rootIds = [importedRootId];
+      candidate.relationships = [];
+    } else {
+      const destinationRootId = candidate.rootIds[0];
+      const destinationRoot = candidate.nodes[destinationRootId];
+      importedNodes[importedRootId].parentId = destinationRootId;
+      destinationRoot.childIds.push(importedRootId);
+      if (Array.isArray(destinationRoot.manualChildIds)) destinationRoot.manualChildIds.push(importedRootId);
+      Object.assign(candidate.nodes, importedNodes);
+    }
+
+    if (!normalizeSingleRootMap(candidate, syntheticRootText)) {
+      throw new Error("The combined map would be too large, too deeply nested, or structurally invalid.");
+    }
+    return { candidate, importedRootId };
   }
 
   async importMarkdownSource(markdown, sourceName) {
@@ -2089,20 +2336,13 @@ class KempfSimpleMindMapView extends TextFileView {
     const imported = this.parseMarkdownOutline(markdown);
     if (!imported.rootIds.length) throw new Error("No Markdown headings or list items were found.");
     const roots = this.map.rootIds.map((id) => this.getNode(id)).filter(Boolean);
-    const isBlank = roots.length === 1 && roots[0].text === "Central idea" && roots[0].childIds.length === 0;
+    const isBlank = this.isBlankMap();
+    if (!roots[0] || !this.ensureEditable(roots[0].id)) return;
+    const importName = String(sourceName || "Imported outline").replace(/\.(?:md|markdown)$/i, "").trim() || "Imported outline";
+    const { candidate, importedRootId } = this.prepareOutlineImport(imported, importName, isBlank);
     this.recordUndoState();
-    normalizeSingleRootMap(imported, String(sourceName || "Imported outline").replace(/\.(?:md|markdown)$/i, "").trim() || "Imported outline");
-    if (isBlank) {
-      this.map.rootIds = [...imported.rootIds];
-      this.map.nodes = imported.nodes;
-    } else {
-      const root = roots[0];
-      const importedRootId = imported.rootIds[0];
-      imported.nodes[importedRootId].parentId = root.id;
-      root.childIds.push(importedRootId);
-      Object.assign(this.map.nodes, imported.nodes);
-    }
-    this.selectedId = imported.rootIds[0];
+    this.mapData = candidate;
+    this.selectedId = importedRootId;
     await this.saveMap();
     this.render();
     this.centerMap();
@@ -2156,13 +2396,12 @@ class KempfSimpleMindMapView extends TextFileView {
       const outlines = Array.from(body.children).filter((child) => child.tagName.toLowerCase() === "outline");
       const imported = this.importedOutlineFromElements(outlines);
       if (!imported.count) throw new Error("No OPML outline nodes were found.");
-      normalizeSingleRootMap(imported, file.name.replace(/\.(?:opml|xml)$/i, "").trim() || "Imported outline");
-      this.recordUndoState();
       const rootId = this.map.rootIds[0];
-      const importedRootId = imported.rootIds[0];
-      imported.nodes[importedRootId].parentId = rootId;
-      this.getNode(rootId).childIds.push(importedRootId);
-      Object.assign(this.map.nodes, imported.nodes);
+      if (!this.ensureEditable(rootId)) return;
+      const importName = file.name.replace(/\.(?:opml|xml)$/i, "").trim() || "Imported outline";
+      const { candidate } = this.prepareOutlineImport(imported, importName, this.isBlankMap());
+      this.recordUndoState();
+      this.mapData = candidate;
       await this.saveMap();
       this.render();
       this.showFullMap();
@@ -2273,6 +2512,10 @@ class KempfSimpleMindMapView extends TextFileView {
       new Notice("Open a .ksmm file before exporting.");
       return;
     }
+    new OutlineExportWarningModal(this.app, "Markdown", () => this.exportMarkdownConfirmed()).open();
+  }
+
+  async exportMarkdownConfirmed() {
     const lines = [];
     const writeChildren = (nodeId, depth) => {
       const node = this.getNode(nodeId);
@@ -2298,6 +2541,10 @@ class KempfSimpleMindMapView extends TextFileView {
 
   async exportOPML() {
     if (!this.file) return void new Notice("Open a .ksmm file before exporting.");
+    new OutlineExportWarningModal(this.app, "OPML", () => this.exportOPMLConfirmed()).open();
+  }
+
+  async exportOPMLConfirmed() {
     const lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<opml version="2.0">', "  <head>", `    <title>${this.xmlEscape(this.file.basename)}</title>`, "  </head>", "  <body>"];
     const writeNode = (nodeId, depth) => {
       const node = this.getNode(nodeId);
@@ -2451,11 +2698,11 @@ class KempfSimpleMindMapView extends TextFileView {
     return lines;
   }
 
-  makeExportScene(rasterSafe, background) {
+  makeExportScene(rasterSafe, background, textColor) {
     const scene = this.scene.cloneNode(true);
     scene.removeAttribute("transform");
-    scene.querySelectorAll(".is-selected, .is-drop-target, .is-dragging").forEach((element) => {
-      element.classList.remove("is-selected", "is-drop-target", "is-dragging");
+    scene.querySelectorAll(".is-selected, .is-drop-target, .is-dragging, .is-relationship-source").forEach((element) => {
+      element.classList.remove("is-selected", "is-drop-target", "is-dragging", "is-relationship-source");
     });
     if (!rasterSafe) return scene;
 
@@ -2478,7 +2725,7 @@ class KempfSimpleMindMapView extends TextFileView {
         x: labelX,
         y: lines.length === 1 ? nodeHeight / 2 + fontSize * 0.34 : nodeHeight / 2 - fontSize * 0.18,
         class: `cmm-export-label${isRoot ? " is-root" : ""}`,
-        style: `font-size:${fontSize}px;font-weight:${fontWeight};fill:${isRoot ? "var(--cmm-node-root-text)" : background === "#ffffff" ? "#111827" : "#f8fafc"}${isRoot ? ";text-anchor:middle" : ""}`
+        style: `font-size:${fontSize}px;font-weight:${fontWeight};fill:${isRoot ? "var(--cmm-node-root-text)" : textColor}${isRoot ? ";text-anchor:middle" : ""}`
       });
       lines.forEach((line, index) => {
         const span = this.svgEl("tspan", { x: labelX, dy: index === 0 ? 0 : fontSize * 1.2 });
@@ -2494,18 +2741,20 @@ class KempfSimpleMindMapView extends TextFileView {
     const bounds = this.exportBounds();
     if (!bounds) return null;
     const appearance = this.getAppearance();
-    const background = appearance.background === "light" ? "#ffffff" : "#000000";
-    const textColor = appearance.background === "light" ? "#111827" : "#f8fafc";
-    const border = appearance.background === "light" ? "#b8c4d6" : "#374151";
+    const light = usesLightPalette(appearance.background);
+    const systemBackground = getComputedStyle(this.contentEl).getPropertyValue("--background-primary").trim();
+    const background = appearance.background === "paper" ? "#f7f3e8" : appearance.background === "dark" ? "#11151c" : systemBackground || (light ? "#ffffff" : "#11151c");
+    const textColor = light ? "#25231f" : "#eef2f8";
+    const border = light ? "#b8c4d6" : "#374151";
     const dimStrength = Math.min(90, Math.max(0, Number(appearance.dimStrength) || 0));
     const dimNodeOpacity = 1 - dimStrength / 100;
     const dimEdgeOpacity = dimNodeOpacity;
-    const strengthPrefix = appearance.background === "light" ? "light" : "dark";
+    const strengthPrefix = light ? "light" : "dark";
     const rootStrength = appearance[`${strengthPrefix}RootStrength`] ?? NODE_STRENGTH_DEFAULTS[`${strengthPrefix}RootStrength`];
     const level1Strength = appearance[`${strengthPrefix}Level1Strength`] ?? NODE_STRENGTH_DEFAULTS[`${strengthPrefix}Level1Strength`];
     const level2Strength = appearance[`${strengthPrefix}Level2Strength`] ?? NODE_STRENGTH_DEFAULTS[`${strengthPrefix}Level2Strength`];
     const deepStrength = appearance[`${strengthPrefix}DeepStrength`] ?? NODE_STRENGTH_DEFAULTS[`${strengthPrefix}DeepStrength`];
-    const scene = this.makeExportScene(rasterSafe, background);
+    const scene = this.makeExportScene(rasterSafe, background, textColor);
     const svg = this.svgEl("svg", {
       xmlns: "http://www.w3.org/2000/svg",
       width: Math.ceil(bounds.width),
@@ -2519,6 +2768,9 @@ class KempfSimpleMindMapView extends TextFileView {
       .cmm-edge-level-1{stroke:var(--cmm-edge-accent);stroke-width:4}
       .cmm-edge-level-2{stroke:color-mix(in srgb,var(--cmm-edge-accent) 70%,${background});stroke-width:3}
       .cmm-edge-level-3{stroke:color-mix(in srgb,var(--cmm-edge-accent) 45%,${background});stroke-width:2}
+      .cmm-relationship{fill:none;stroke:${textColor};stroke-width:2;stroke-dasharray:7 7;stroke-linecap:round;opacity:.55}
+      .cmm-relationship-hit{display:none}
+      .cmm-relationship-group.is-dimmed{opacity:${dimEdgeOpacity}}
       .cmm-node rect{stroke:${border};stroke-width:1.5}
       .cmm-node.is-dimmed{opacity:${dimNodeOpacity}}
       .cmm-node rect{fill:color-mix(in srgb,var(--cmm-node-accent) ${level2Strength}%,${background})}
@@ -2707,6 +2959,11 @@ class KempfSimpleMindMapView extends TextFileView {
 
   onKeyDown(event) {
     if (this.isMobile) return;
+    if (event.key === "Escape" && this.relationshipSourceId) {
+      event.preventDefault();
+      this.cancelRelationship(true);
+      return;
+    }
     const modifier = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
     if (modifier && key === "f") {
@@ -2827,7 +3084,12 @@ class KempfSimpleMindMapView extends TextFileView {
     if (event.button !== 0 || event.target !== this.svg) return;
     const wasPan = this.backgroundPanMoved;
     this.backgroundPanMoved = false;
-    if (wasPan || !this.selectedId) return;
+    if (wasPan) return;
+    if (this.relationshipSourceId) {
+      this.cancelRelationship(true);
+      return;
+    }
+    if (!this.selectedId) return;
     this.selectedId = null;
     this.viewport.focus();
     this.render();
@@ -2851,7 +3113,7 @@ class KempfSimpleMindMapView extends TextFileView {
   }
 
   nodeDimensions(depth) {
-    const padding = Math.min(24, Math.max(4, Number(this.getAppearance().nodePadding) || SPACING_DEFAULTS.nodePadding));
+    const padding = Math.min(24, Math.max(7, Number(this.getAppearance().nodePadding) || SPACING_DEFAULTS.nodePadding));
     const delta = (padding - SPACING_DEFAULTS.nodePadding) * 2;
     if (depth === 0) return { width: 260 + delta, height: 80 + delta, levelClass: "cmm-level-root" };
     if (depth === 1) return { width: 200 + delta, height: 60 + delta, levelClass: "cmm-level-parent" };
@@ -3058,8 +3320,9 @@ class KempfSimpleMindMapView extends TextFileView {
 
   nodeDisplayColor(colorName, depth) {
     const color = NODE_COLORS[colorName] || NODE_COLORS.blue;
-    const light = this.getAppearance().background === "light";
-    const background = light ? "#ffffff" : "#000000";
+    const appearance = this.getAppearance();
+    const light = usesLightPalette(appearance.background);
+    const background = appearance.background === "paper" ? "#f7f3e8" : light ? "#ffffff" : "#11151c";
     const amount = depth === 0 ? 1 : depth === 1 ? 0.7 : 0.55;
     return mixHexColor(color.hex, background, amount);
   }
@@ -3100,12 +3363,43 @@ class KempfSimpleMindMapView extends TextFileView {
     });
   }
 
+  renderRelationships(positions) {
+    (this.map.relationships || []).forEach((relationship) => {
+      const from = positions[relationship.fromId];
+      const to = positions[relationship.toId];
+      if (!from || !to || !this.isVisibleInFocus(relationship.fromId) || !this.isVisibleInFocus(relationship.toId)) return;
+      const fromSize = this.nodeDimensions(from.depth);
+      const toSize = this.nodeDimensions(to.depth);
+      const fromCenter = { x: from.x + fromSize.width / 2, y: from.y + fromSize.height / 2 };
+      const toCenter = { x: to.x + toSize.width / 2, y: to.y + toSize.height / 2 };
+      const start = this.edgePoint(from, fromSize, toCenter);
+      const end = this.edgePoint(to, toSize, fromCenter);
+      const pathData = this.connectorPath(start, end);
+      const dimmed = this.shouldDimNode(relationship.fromId) && this.shouldDimNode(relationship.toId);
+      const group = this.svgEl("g", { class: `cmm-relationship-group${dimmed ? " is-dimmed" : ""}` });
+      const path = this.svgEl("path", { d: pathData, class: "cmm-relationship" });
+      const hit = this.svgEl("path", { d: pathData, class: "cmm-relationship-hit" });
+      const openMenu = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (this.isMobile) this.showMobileRelationshipSheet(relationship.id);
+        else this.showRelationshipMenu(event, relationship.id);
+      };
+      hit.addEventListener("contextmenu", openMenu);
+      this.installLongPress(hit, () => this.showMobileRelationshipSheet(relationship.id));
+      group.append(path, hit);
+      this.scene.appendChild(group);
+    });
+  }
+
   render() {
     if (!this.scene) return;
     this.hideNodeTooltip();
     this.hideNotesPreview();
     this.scene.replaceChildren();
     const positions = this.layout();
+
+    this.renderRelationships(positions);
 
     Object.values(this.map.nodes).forEach((node) => {
       if (!positions[node.id] || !this.isVisibleInFocus(node.id) || node.collapsed) return;
@@ -3120,7 +3414,7 @@ class KempfSimpleMindMapView extends TextFileView {
       const hasNotes = Boolean((node.notes || "").trim());
       const { width, height, levelClass } = this.nodeDimensions(position.depth);
       const nodeColor = NODE_COLORS[this.effectiveNodeColor(id)] || NODE_COLORS.blue;
-      const group = this.svgEl("g", { class: `cmm-node ${levelClass}${id === this.selectedId ? " is-selected" : ""}${locked ? " is-locked" : ""}${this.shouldDimNode(id) ? " is-dimmed" : ""}`, transform: `translate(${position.x} ${position.y})`, tabindex: "0", style: `--cmm-node-accent: ${nodeColor.hex}; --cmm-node-root-text: ${nodeColor.text}` });
+      const group = this.svgEl("g", { class: `cmm-node ${levelClass}${id === this.selectedId ? " is-selected" : ""}${id === this.relationshipSourceId ? " is-relationship-source" : ""}${locked ? " is-locked" : ""}${this.shouldDimNode(id) ? " is-dimmed" : ""}`, transform: `translate(${position.x} ${position.y})`, tabindex: "0", style: `--cmm-node-accent: ${nodeColor.hex}; --cmm-node-root-text: ${nodeColor.text}` });
       group.dataset.nodeId = id;
       const rect = this.svgEl("rect", { width, height, rx: 10, ry: 10 });
       const rightReserve = 18 + (node.childIds.length ? 34 : 0) + (locked ? 22 : 0) + (hasNotes ? 24 : 0);
@@ -3216,6 +3510,10 @@ class KempfSimpleMindMapView extends TextFileView {
       group.addEventListener("click", (event) => {
         event.stopPropagation();
         if (Date.now() < this.suppressClickUntil) return;
+        if (this.relationshipSourceId) {
+          this.createRelationship(this.relationshipSourceId, id);
+          return;
+        }
         this.selectedId = id;
         this.viewport.focus();
         this.render();
@@ -3240,13 +3538,6 @@ class KempfSimpleMindMapView extends TextFileView {
         this.showMobileNodeSheet(id);
       }, () => Boolean(this.draggedId) || this.mobileGesture?.type === "pinch");
       group.addEventListener("pointerdown", (event) => this.startNodeDrag(event, id, group));
-      const updateDrop = (event) => this.updateNodeDropTarget(event, id, position, group);
-      group.addEventListener("pointerenter", updateDrop);
-      group.addEventListener("pointermove", updateDrop);
-      group.addEventListener("pointerleave", () => {
-        if (this.dropTargetId === id) this.clearNodeDropTarget();
-        group.removeClass("is-drop-target");
-      });
       this.scene.appendChild(group);
     });
     this.applyTransform();
@@ -3261,40 +3552,81 @@ class KempfSimpleMindMapView extends TextFileView {
     this.scene?.querySelector(".cmm-insertion-line")?.remove();
   }
 
-  updateNodeDropTarget(event, id, position, group) {
-    if (!this.draggedId || this.draggedId === id || this.isDescendant(id, this.draggedId) || this.lockingNodeId(id)) return;
+  findNodeDropCandidate(pointerX, pointerY) {
     const dragged = this.getNode(this.draggedId);
-    const target = this.getNode(id);
-    if (!dragged || !target) return;
-    this.clearNodeDropTarget();
-    this.dropTargetId = id;
-    if (dragged.parentId !== target.parentId) {
-      this.dropPlacement = "child";
-      group.addClass("is-drop-target");
-      return;
+    if (!dragged) return null;
+    const positions = this.layout();
+
+    for (const [id, position] of Object.entries(positions)) {
+      if (id === this.draggedId || !this.isVisibleInFocus(id) || this.isDescendant(id, this.draggedId) || this.lockingNodeId(id)) continue;
+      const { width, height } = this.nodeDimensions(position.depth);
+      if (pointerX >= position.x && pointerX <= position.x + width && pointerY >= position.y && pointerY <= position.y + height) {
+        return { targetId: id, placement: "child", position };
+      }
     }
+
+    const siblings = dragged.parentId ? this.getNode(dragged.parentId)?.childIds : this.map.rootIds;
+    if (!siblings) return null;
+    const parent = dragged.parentId ? this.getNode(dragged.parentId) : null;
+    if (parent && ["asc", "desc"].includes(parent.childSort)) return null;
+    const layoutMode = this.getAppearance().layout || "right";
+    const horizontalOrder = ["up", "down"].includes(layoutMode);
+    const effectiveScale = Number.isFinite(this.scale) && this.scale > 0 ? this.scale : 1;
+    const gapReach = 44 / effectiveScale;
+    const crossReach = 32 / effectiveScale;
+    let best = null;
+    siblings.forEach((id) => {
+      if (id === this.draggedId || !positions[id] || !this.isVisibleInFocus(id) || this.lockingNodeId(id)) return;
+      const position = positions[id];
+      const { width, height } = this.nodeDimensions(position.depth);
+      const crossInside = horizontalOrder
+        ? pointerY >= position.y - crossReach && pointerY <= position.y + height + crossReach
+        : pointerX >= position.x - crossReach && pointerX <= position.x + width + crossReach;
+      if (!crossInside) return;
+      const edges = horizontalOrder
+        ? [
+          { placement: "before", line: position.x - 8, inside: pointerX >= position.x - gapReach && pointerX < position.x },
+          { placement: "after", line: position.x + width + 8, inside: pointerX > position.x + width && pointerX <= position.x + width + gapReach }
+        ]
+        : [
+          { placement: "before", line: position.y - 8, inside: pointerY >= position.y - gapReach && pointerY < position.y },
+          { placement: "after", line: position.y + height + 8, inside: pointerY > position.y + height && pointerY <= position.y + height + gapReach }
+        ];
+      edges.forEach((edge) => {
+        if (!edge.inside) return;
+        const coordinate = horizontalOrder ? pointerX : pointerY;
+        const score = Math.abs(coordinate - edge.line);
+        if (!best || score < best.score) best = { targetId: id, placement: edge.placement, position, score };
+      });
+    });
+    return best;
+  }
+
+  updateNodeDropTarget(event) {
+    if (!this.draggedId) return;
     const rect = this.viewport.getBoundingClientRect();
     const pointerX = (event.clientX - rect.left - this.offsetX) / this.scale;
     const pointerY = (event.clientY - rect.top - this.offsetY) / this.scale;
+    const candidate = this.findNodeDropCandidate(pointerX, pointerY);
+    this.clearNodeDropTarget();
+    if (!candidate) return;
+    this.dropTargetId = candidate.targetId;
+    this.dropPlacement = candidate.placement;
+    if (candidate.placement === "child") {
+      this.scene.querySelector(`[data-node-id="${CSS.escape(candidate.targetId)}"]`)?.addClass("is-drop-target");
+      return;
+    }
+    const { position } = candidate;
     const { width, height } = this.nodeDimensions(position.depth);
     const layoutMode = this.getAppearance().layout || "right";
     const horizontalOrder = ["up", "down"].includes(layoutMode);
-    const relativePosition = horizontalOrder
-      ? (pointerX - position.x) / width
-      : (pointerY - position.y) / height;
-    if (relativePosition >= 0.25 && relativePosition <= 0.75) {
-      this.dropPlacement = "child";
-      group.addClass("is-drop-target");
-      return;
-    }
-    this.dropPlacement = relativePosition < 0.25 ? "before" : "after";
     const line = this.svgEl("line", { class: "cmm-insertion-line" });
     if (horizontalOrder) {
-      const x = position.x + (this.dropPlacement === "before" ? -8 : width + 8);
+      const x = position.x + (candidate.placement === "before" ? -8 : width + 8);
       line.setAttribute("x1", x); line.setAttribute("x2", x);
       line.setAttribute("y1", position.y); line.setAttribute("y2", position.y + height);
     } else {
-      const y = position.y + (this.dropPlacement === "before" ? -8 : height + 8);
+      const y = position.y + (candidate.placement === "before" ? -8 : height + 8);
       line.setAttribute("x1", position.x); line.setAttribute("x2", position.x + width);
       line.setAttribute("y1", y); line.setAttribute("y2", y);
     }
@@ -3316,8 +3648,10 @@ class KempfSimpleMindMapView extends TextFileView {
         this.draggedId = id;
         group.addClass("is-dragging");
       }
+      if (moved) this.updateNodeDropTarget(moveEvent);
     };
-    const up = async () => {
+    const up = async (upEvent) => {
+      if (moved) this.updateNodeDropTarget(upEvent);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       group.removeClass("is-dragging");
@@ -3461,11 +3795,10 @@ class KempfSimpleMindMapSettingsTab extends PluginSettingTab {
       .setName("Default background")
       .setDesc("Background used when creating a new .ksmm map.")
       .addDropdown((dropdown) => {
-        dropdown.addOption("dark", "Black");
-        dropdown.addOption("light", "White");
-        dropdown.setValue(this.plugin.data.backgroundTheme || "dark");
+        Object.entries(BACKGROUND_OPTIONS).forEach(([value, label]) => dropdown.addOption(value, label));
+        dropdown.setValue(normalizeBackground(this.plugin.data.backgroundTheme));
         dropdown.onChange(async (value) => {
-          this.plugin.data.backgroundTheme = value === "light" ? "light" : "dark";
+          this.plugin.data.backgroundTheme = normalizeBackground(value);
           await this.plugin.savePluginData();
         });
       });
@@ -3562,7 +3895,8 @@ class KempfSimpleMindMapSettingsTab extends PluginSettingTab {
 
 module.exports = class KempfSimpleMindMapPlugin extends Plugin {
   async onload() {
-    this.data = Object.assign({ backgroundTheme: "dark", highlightColor: "blue", defaultLayout: "right", defaultFolder: "", helpWindowGeometry: null, nodeEditorGeometry: null, searchPanelGeometry: null, showNodeTooltips: true, randomBranchColors: false }, await this.loadData());
+    this.data = Object.assign({ backgroundTheme: "system", highlightColor: "blue", defaultLayout: "right", defaultFolder: "", helpWindowGeometry: null, nodeEditorGeometry: null, searchPanelGeometry: null, showNodeTooltips: true, randomBranchColors: false }, await this.loadData());
+    this.data.backgroundTheme = normalizeBackground(this.data.backgroundTheme || this.data.theme);
     this.branchClipboard = null;
     this.helpWindowEl = null;
     this.helpResizeObserver = null;
@@ -3725,7 +4059,7 @@ module.exports = class KempfSimpleMindMapPlugin extends Plugin {
 
   getDefaultAppearance() {
     return {
-      background: this.data.backgroundTheme || this.data.theme || "dark",
+      background: normalizeBackground(this.data.backgroundTheme || this.data.theme),
       highlight: this.data.highlightColor || "blue",
       layout: ["right", "left", "down", "up", "radial"].includes(this.data.defaultLayout) ? this.data.defaultLayout : "right",
       randomBranchColors: this.data.randomBranchColors === true

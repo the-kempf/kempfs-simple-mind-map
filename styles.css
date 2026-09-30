@@ -31,6 +31,8 @@
 .cmm-node-strength-heading { margin: 14px 0 2px; color: var(--text-muted); font-size: var(--font-ui-small); }
 .cmm-spacing-preview { flex: 1 1 auto; width: 100%; min-height: 280px; overflow: hidden; border: 1px solid var(--background-modifier-border); border-radius: 8px; background-color: #000; background-image: radial-gradient(#202938 1px, transparent 1px); background-size: 18px 18px; }
 .cmm-spacing-preview.is-light { background-color: #fff; background-image: radial-gradient(#dbe4f0 1px, transparent 1px); }
+.cmm-spacing-preview.is-paper { background-color: #f7f3e8; }
+.cmm-spacing-preview.is-system { background-color: var(--background-primary); background-image: radial-gradient(var(--background-modifier-border) 1px, transparent 1px); }
 .cmm-spacing-preview svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
 .cmm-spacing-preview.is-panning svg { cursor: grabbing; }
 .cmm-preview-edge { fill: none; stroke: var(--cmm-preview-accent); stroke-width: 3; stroke-linecap: round; }
@@ -43,28 +45,64 @@
 .cmm-renamable-view .view-header-title { cursor: text; }
 .cmm-header-rename-input { min-width: 180px; max-width: min(420px, 55vw); height: 26px; margin: 0; padding: 2px 7px; border: 1px solid var(--interactive-accent); border-radius: 5px; background: var(--background-primary); color: var(--text-normal); font: inherit; }
 .kempfs-simple-mind-map-view.cmm-theme-dark {
-  --cmm-background: #000000;
-  --cmm-toolbar-background: #0a0a0a;
+  --cmm-background: #11151c;
+  --cmm-node-background: #11151c;
+  --cmm-toolbar-background: #171c24;
   --cmm-grid: #202938;
-  --cmm-node: color-mix(in srgb, var(--cmm-accent) 18%, #000000);
-  --cmm-parent: color-mix(in srgb, var(--cmm-accent) 38%, #000000);
-  --cmm-edge-level-2: color-mix(in srgb, var(--cmm-accent) 70%, #000000);
-  --cmm-edge-level-3: color-mix(in srgb, var(--cmm-accent) 45%, #000000);
-  --cmm-text: #f8fafc;
+  --cmm-text: #eef2f8;
   --cmm-border: #374151;
-  --cmm-drop: color-mix(in srgb, var(--cmm-accent) 35%, #000000);
+  --cmm-root-strength: var(--cmm-dark-root-strength);
+  --cmm-level1-strength: var(--cmm-dark-level1-strength);
+  --cmm-level2-strength: var(--cmm-dark-level2-strength);
+  --cmm-deep-strength: var(--cmm-dark-deep-strength);
 }
-.kempfs-simple-mind-map-view.cmm-theme-light {
-  --cmm-background: #ffffff;
-  --cmm-toolbar-background: #f8fafc;
+.kempfs-simple-mind-map-view.cmm-theme-paper {
+  --cmm-background: #f7f3e8;
+  --cmm-node-background: #f7f3e8;
+  --cmm-toolbar-background: #eee8d8;
   --cmm-grid: #dbe4f0;
-  --cmm-node: color-mix(in srgb, var(--cmm-accent) 10%, #ffffff);
-  --cmm-parent: color-mix(in srgb, var(--cmm-accent) 25%, #ffffff);
-  --cmm-edge-level-2: color-mix(in srgb, var(--cmm-accent) 70%, #ffffff);
-  --cmm-edge-level-3: color-mix(in srgb, var(--cmm-accent) 45%, #ffffff);
-  --cmm-text: #111827;
+  --cmm-text: #25231f;
   --cmm-border: #b8c4d6;
-  --cmm-drop: color-mix(in srgb, var(--cmm-accent) 22%, #ffffff);
+  --cmm-root-strength: var(--cmm-light-root-strength);
+  --cmm-level1-strength: var(--cmm-light-level1-strength);
+  --cmm-level2-strength: var(--cmm-light-level2-strength);
+  --cmm-deep-strength: var(--cmm-light-deep-strength);
+}
+.kempfs-simple-mind-map-view.cmm-theme-system {
+  --cmm-background: var(--background-primary);
+  --cmm-node-background: var(--background-primary);
+  --cmm-toolbar-background: var(--background-secondary);
+  --cmm-grid: var(--background-modifier-border);
+  --cmm-text: var(--text-normal);
+  --cmm-border: var(--background-modifier-border-hover);
+  --cmm-root-strength: var(--cmm-light-root-strength);
+  --cmm-level1-strength: var(--cmm-light-level1-strength);
+  --cmm-level2-strength: var(--cmm-light-level2-strength);
+  --cmm-deep-strength: var(--cmm-light-deep-strength);
+}
+body.theme-dark .kempfs-simple-mind-map-view.cmm-theme-system {
+  --cmm-background: var(--background-primary);
+  --cmm-node-background: var(--background-primary);
+  --cmm-toolbar-background: var(--background-secondary);
+  --cmm-grid: var(--background-modifier-border);
+  --cmm-text: var(--text-normal);
+  --cmm-border: var(--background-modifier-border-hover);
+  --cmm-root-strength: var(--cmm-dark-root-strength);
+  --cmm-level1-strength: var(--cmm-dark-level1-strength);
+  --cmm-level2-strength: var(--cmm-dark-level2-strength);
+  --cmm-deep-strength: var(--cmm-dark-deep-strength);
+}
+body.theme-light .kempfs-simple-mind-map-view.cmm-theme-system {
+  --cmm-background: var(--background-primary);
+  --cmm-node-background: var(--background-primary);
+  --cmm-toolbar-background: var(--background-secondary);
+  --cmm-grid: var(--background-modifier-border);
+  --cmm-text: var(--text-normal);
+  --cmm-border: var(--background-modifier-border-hover);
+  --cmm-root-strength: var(--cmm-light-root-strength);
+  --cmm-level1-strength: var(--cmm-light-level1-strength);
+  --cmm-level2-strength: var(--cmm-light-level2-strength);
+  --cmm-deep-strength: var(--cmm-light-deep-strength);
 }
 .cmm-toolbar { height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border-bottom: 1px solid var(--cmm-border); background: var(--cmm-toolbar-background); color: var(--cmm-text); overflow-x: auto; overflow-y: hidden; }
 .cmm-toolbar strong { margin-right: auto; }
@@ -73,9 +111,9 @@
 .cmm-focus-status-label { max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
 .cmm-toolbar .cmm-focus-exit { padding: 2px 6px; min-width: auto; font-size: var(--font-ui-smaller); }
 .cmm-toolbar button { width: auto; padding: 4px 9px; font-size: var(--font-ui-small); }
-.cmm-theme-light .cmm-toolbar button:not(:disabled) { color: #252a31; }
-.cmm-theme-light .cmm-toolbar button:not(:disabled):hover { color: #0f1115; }
-.cmm-theme-light .cmm-toolbar button:disabled { color: #8b929c; }
+.cmm-theme-paper .cmm-toolbar button:not(:disabled), body.theme-light .cmm-theme-system .cmm-toolbar button:not(:disabled) { color: #252a31; }
+.cmm-theme-paper .cmm-toolbar button:not(:disabled):hover, body.theme-light .cmm-theme-system .cmm-toolbar button:not(:disabled):hover { color: #0f1115; }
+.cmm-theme-paper .cmm-toolbar button:disabled, body.theme-light .cmm-theme-system .cmm-toolbar button:disabled { color: #8b929c; }
 .cmm-toolbar button[aria-label="Zoom in"], .cmm-toolbar button[aria-label="Zoom out"] { min-width: 32px; font-size: 20px; line-height: 20px; font-weight: 600; }
 .cmm-toolbar button[aria-label="Undo"], .cmm-toolbar button[aria-label="Redo"] { min-width: 32px; font-size: 20px; line-height: 20px; font-weight: 600; }
 .cmm-toolbar button[aria-label="Help"] { min-width: 32px; font-size: 18px; font-weight: 700; }
@@ -95,19 +133,19 @@
 .cmm-edge { fill: none; opacity: .9; stroke-linecap: round; stroke-linejoin: round; }
 .cmm-edge.is-dimmed { opacity: var(--cmm-dim-edge-opacity, .14); }
 .cmm-edge-level-1 { stroke: var(--cmm-edge-accent, var(--cmm-accent)); stroke-width: 4; }
-.cmm-theme-dark .cmm-edge-level-2 { stroke: color-mix(in srgb, var(--cmm-edge-accent, var(--cmm-accent)) 70%, #000000); stroke-width: 3; }
-.cmm-theme-light .cmm-edge-level-2 { stroke: color-mix(in srgb, var(--cmm-edge-accent, var(--cmm-accent)) 70%, #ffffff); stroke-width: 3; }
-.cmm-theme-dark .cmm-edge-level-3 { stroke: color-mix(in srgb, var(--cmm-edge-accent, var(--cmm-accent)) 45%, #000000); }
-.cmm-theme-light .cmm-edge-level-3 { stroke: color-mix(in srgb, var(--cmm-edge-accent, var(--cmm-accent)) 45%, #ffffff); }
+.cmm-edge-level-2 { stroke: color-mix(in srgb, var(--cmm-edge-accent, var(--cmm-accent)) 70%, var(--cmm-node-background)); stroke-width: 3; }
+.cmm-edge-level-3 { stroke: color-mix(in srgb, var(--cmm-edge-accent, var(--cmm-accent)) 45%, var(--cmm-node-background)); }
 .cmm-edge-level-3 { stroke-width: 2; }
+.cmm-relationship { fill: none; stroke: color-mix(in srgb, var(--cmm-text) 58%, transparent); stroke-width: 2; stroke-dasharray: 7 7; stroke-linecap: round; opacity: .72; pointer-events: none; }
+.cmm-relationship-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: context-menu; }
+.cmm-relationship-group.is-dimmed { opacity: var(--cmm-dim-edge-opacity, .5); }
 .cmm-node { cursor: pointer; }
 .cmm-node rect { stroke: var(--cmm-border); stroke-width: 1.5; filter: drop-shadow(0 3px 6px rgba(0,0,0,.18)); transition: stroke .12s, stroke-width .12s, fill .12s; }
-.cmm-theme-dark .cmm-node rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-dark-level2-strength), #000000); }
-.cmm-theme-light .cmm-node rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-light-level2-strength), #ffffff); }
+.cmm-node rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-level2-strength), var(--cmm-node-background)); }
 .cmm-node:hover rect { stroke: var(--cmm-node-accent, var(--cmm-accent)); }
 .cmm-node.is-selected rect { stroke: var(--cmm-node-accent, var(--cmm-accent)); stroke-width: 3; }
-.cmm-theme-dark .cmm-node.is-drop-target rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) 35%, #000000); }
-.cmm-theme-light .cmm-node.is-drop-target rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) 22%, #ffffff); }
+.cmm-node.is-relationship-source rect { stroke: #f8fafc; stroke-width: 4; stroke-dasharray: 8 5; filter: drop-shadow(0 0 7px var(--cmm-node-accent, var(--cmm-accent))); }
+.cmm-node.is-drop-target rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) 28%, var(--cmm-node-background)); }
 .cmm-node.is-drop-target rect { stroke: var(--cmm-node-accent, var(--cmm-accent)); stroke-width: 4; }
 .cmm-node.is-dragging { opacity: .45; }
 .cmm-insertion-line { stroke: var(--cmm-accent); stroke-width: 3; stroke-linecap: round; pointer-events: none; filter: drop-shadow(0 0 3px var(--cmm-accent)); }
@@ -118,19 +156,16 @@
 .cmm-node-label-area { pointer-events: none; overflow: hidden; }
 .cmm-node-label { position: relative; top: 50%; transform: translateY(-50%); width: 100%; max-height: 100%; display: -webkit-box; overflow: hidden; color: var(--cmm-text); font-family: var(--font-interface); line-height: 1.2; overflow-wrap: anywhere; word-break: break-word; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .cmm-level-root .cmm-node-label { font-size: 18px; font-weight: 700; text-align: center; }
-.cmm-theme-dark .cmm-level-root rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-dark-root-strength), #000000); }
-.cmm-theme-light .cmm-level-root rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-light-root-strength), #ffffff); }
+.cmm-level-root rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-root-strength), var(--cmm-node-background)); }
 .cmm-level-root rect { stroke: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) 72%, #ffffff); stroke-width: 4; filter: drop-shadow(0 0 8px var(--cmm-node-accent, var(--cmm-accent))) drop-shadow(0 0 3px var(--cmm-node-accent, var(--cmm-accent))); }
 .cmm-level-root.is-selected rect { stroke: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) 72%, #ffffff); stroke-width: 5; }
 .cmm-level-root .cmm-node-label { color: var(--cmm-node-root-text, var(--cmm-root-text)); }
 .cmm-level-root .cmm-badge { fill: var(--cmm-node-root-text, var(--cmm-root-text)); }
 .cmm-level-parent .cmm-node-label { font-size: 16px; font-weight: 600; }
-.cmm-theme-dark .cmm-level-parent rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-dark-level1-strength), #000000); }
-.cmm-theme-light .cmm-level-parent rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-light-level1-strength), #ffffff); }
+.cmm-level-parent rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-level1-strength), var(--cmm-node-background)); }
 .cmm-level-detail .cmm-node-label { font-size: 14px; font-weight: 400; }
 .cmm-level-deep .cmm-node-label { font-size: 14px; font-weight: 400; }
-.cmm-theme-dark .cmm-level-deep rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-dark-deep-strength), #000000); }
-.cmm-theme-light .cmm-level-deep rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-light-deep-strength), #ffffff); }
+.cmm-level-deep rect { fill: color-mix(in srgb, var(--cmm-node-accent, var(--cmm-accent)) var(--cmm-deep-strength), var(--cmm-node-background)); }
 .cmm-badge { fill: var(--cmm-node-accent, var(--cmm-accent)); font-size: 12px; font-weight: 700; text-anchor: middle; pointer-events: none; }
 .cmm-fold-toggle { cursor: pointer; outline: none; }
 .cmm-fold-toggle-hit { fill: transparent !important; stroke: none !important; pointer-events: all; }

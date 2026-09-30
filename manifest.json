@@ -1,7 +1,7 @@
 {
   "id": "kempfs-simple-mind-map",
   "name": "The Kempf Simple Mind Map",
-  "version": "0.1.51",
+  "version": "0.1.6",
   "minAppVersion": "1.5.0",
   "description": "File-based mind maps with keyboard, mouse, and touch controls, customizable layouts, branch focus, notes, search, import, and export.",
   "author": "Kempf",

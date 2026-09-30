@@ -24,8 +24,6 @@ Every map is stored as a readable `.ksmm` file inside the vault. Maps can be ren
 
 ### Community Plugins
 
-After the plugin is accepted into Obsidian's Community Plugins directory:
-
 1. Open **Settings → Community plugins**.
 2. Search for **The Kempf Simple Mind Map**.
 3. Select **Install**, then **Enable**.
@@ -85,7 +83,7 @@ The selected node remains unchanged after adding a child or sibling, allowing se
 | Left-button drag on empty background | Pan |
 | Middle-button drag | Pan from anywhere |
 | Left-click empty background | Clear node selection |
-| Drag near a sibling edge | Move before or after that sibling |
+| Drag into the gap above/below a sibling (or left/right in vertical layouts) | Move at the visible insertion line |
 | Drag onto a node center | Make the dragged subtree a child |
 | Double-click a node | Edit title and notes |
 | Right-click a node | Open node and branch actions |
@@ -127,19 +125,19 @@ Subtree-aware spacing keeps branches separated. Connectors attach at the middle 
 
 Open Map settings from the toolbar or background menu. Settings are stored separately in each `.ksmm` map.
 
-- Background: black or white
+- Background: follow the current Obsidian theme, fixed dark, or warm paper
 - Highlight color
 - Layout
 - Dim unrelated branches
 - Dim strength, defaulting to 50%
 - Level spacing: 65–300
 - Sibling spacing: 60–300
-- Node padding: 4–24
+- Node padding: 7–24
 - Connector-trunk spacing: 30–70
 
 Each spacing slider has an individual reset control. **Compact** applies the minimum spacing preset. The live preview uses the same layout calculations as the map and supports zooming, panning, and reset view.
 
-Node color strength can also be adjusted independently for the central node, level 1, level 2, and level 3 or deeper. Black and white backgrounds have separate values, and each control has its own reset button. Both backgrounds default to 100%, 75%, 50%, and 35%.
+Node color strength can also be adjusted independently for the central node, level 1, level 2, and level 3 or deeper. Dark backgrounds and light or paper backgrounds have separate values, and each control has its own reset button. Both palettes default to 100%, 75%, 50%, and 35%.
 
 Changing colors preserves selection, focus, position, and zoom. Geometry changes such as layout and node spacing recenter the map.
 
@@ -153,9 +151,9 @@ Changing plugin defaults does not alter existing maps.
 
 ## Import and export
 
-Import Markdown from the vault or computer, OPML outlines, native `.ksmm` maps, or JSON backups. Multiple top-level imported items remain siblings beneath a generated central node. Imported maps are checked for broken references, cycles, duplicate parents, unsafe depth, and invalid appearance values. JSON backups are restored into a new `.ksmm` map so the currently open map is not overwritten.
+Import Markdown from the vault or computer, OPML outlines, native `.ksmm` maps, or JSON backups. The import menu shows the destination before file selection. Markdown and OPML replace an untouched blank map or are added beneath the current central node; native maps and JSON backups open as new `.ksmm` maps. Multiple top-level imported items remain siblings beneath a generated central node. Imported maps are checked for broken references, cycles, duplicate parents, unsafe depth, and invalid appearance values.
 
-Export the complete map as Markdown, OPML, `.ksmm`, JSON backup, PNG, JPG, SVG, or PDF. Exports use a Save As workflow where supported by the platform.
+Export the map as Markdown, OPML, `.ksmm`, JSON backup, PNG, JPG, SVG, or PDF. Exports use a Save As workflow where supported by the platform. Markdown and OPML include node titles and hierarchy only; the plugin warns that notes, relationships, folding, locks, colors, layout, and other appearance settings are omitted.
 
 ## Toolbar and help
 
@@ -185,7 +183,7 @@ Imported files are processed locally. Exported files are written only to the des
 
 ## Version
 
-Current version: **0.1.5 beta**
+Current version: **0.1.6**
 
 ## Author
 
