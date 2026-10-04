@@ -1,4 +1,4 @@
-const { FuzzySuggestModal, Menu, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFolder, TextFileView, normalizePath } = require("obsidian");
+const { FuzzySuggestModal, Menu, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFolder, TextFileView, normalizePath, setIcon } = require("obsidian");
 
 const VIEW_TYPE = "kempfs-simple-mind-map-view";
 const NODE_COLORS = {
@@ -18,7 +18,6 @@ const NODE_COLOR_NAMES = Object.keys(NODE_COLORS);
 const BACKGROUND_OPTIONS = { system: "Obsidian default", dark: "Dark", paper: "Paper" };
 const BACKGROUND_NAMES = Object.keys(BACKGROUND_OPTIONS);
 const SPACING_DEFAULTS = { levelSpacing: 100, siblingSpacing: 100, nodePadding: 12, trunkSpacing: 48 };
-const SPACING_COMPACT = { levelSpacing: 65, siblingSpacing: 60, nodePadding: 7, trunkSpacing: 30 };
 const NODE_STRENGTH_DEFAULTS = {
   darkRootStrength: 100,
   darkLevel1Strength: 75,
@@ -29,6 +28,56 @@ const NODE_STRENGTH_DEFAULTS = {
   lightLevel2Strength: 50,
   lightDeepStrength: 35
 };
+const makeNodeStrengthPreset = ([root, level1, level2, deep]) => ({
+  darkRootStrength: root,
+  darkLevel1Strength: level1,
+  darkLevel2Strength: level2,
+  darkDeepStrength: deep,
+  lightRootStrength: root,
+  lightLevel1Strength: level1,
+  lightLevel2Strength: level2,
+  lightDeepStrength: deep
+});
+const NODE_STRENGTH_PRESETS = {
+  full: makeNodeStrengthPreset([100, 100, 100, 100]),
+  medium: makeNodeStrengthPreset([100, 65, 40, 25]),
+  extreme: makeNodeStrengthPreset([100, 50, 35, 10])
+};
+const NODE_STRENGTH_OPTIONS = { full: "Full", medium: "Medium", extreme: "Extreme" };
+const STANDARD_LAYOUTS = ["right", "left", "down", "up", "radial"];
+const STAGGERED_LAYOUTS = ["staggered-left", "staggered-right", "staggered-up", "staggered-down"];
+const LINEAR_LAYOUTS = [
+  "linear-up-left", "linear-up-right", "linear-down-left", "linear-down-right",
+  "linear-left-up", "linear-left-down", "linear-right-up", "linear-right-down"
+];
+const LAYOUT_OPTIONS = [
+  ["right", "Right-facing"], ["left", "Left-facing"], ["down", "Down-facing"], ["up", "Up-facing"], ["radial", "Radial"],
+  ["staggered-left", "Staggered — Left"], ["staggered-right", "Staggered — Right"],
+  ["staggered-up", "Staggered — Up"], ["staggered-down", "Staggered — Down"],
+  ["linear-up-left", "Linear — Up and Left"], ["linear-up-right", "Linear — Up and Right"],
+  ["linear-down-left", "Linear — Down and Left"], ["linear-down-right", "Linear — Down and Right"],
+  ["linear-left-up", "Linear — Left and Up"], ["linear-left-down", "Linear — Left and Down"],
+  ["linear-right-up", "Linear — Right and Up"], ["linear-right-down", "Linear — Right and Down"]
+];
+
+function inferNodeStrengthPreset(appearance) {
+  if (NODE_STRENGTH_PRESETS[appearance.nodeColorStrength]) return appearance.nodeColorStrength;
+  const legacyPreset = { bright: "medium", normal: "medium", dark: "extreme" }[appearance.nodeColorStrength];
+  if (legacyPreset) return legacyPreset;
+  let closest = "medium";
+  let closestDistance = Infinity;
+  Object.entries(NODE_STRENGTH_PRESETS).forEach(([name, preset]) => {
+    const distance = Object.keys(NODE_STRENGTH_DEFAULTS).reduce((total, key) => {
+      const actual = Number.isFinite(Number(appearance[key])) ? Number(appearance[key]) : NODE_STRENGTH_DEFAULTS[key];
+      return total + Math.abs(actual - preset[key]);
+    }, 0);
+    if (distance < closestDistance) {
+      closest = name;
+      closestDistance = distance;
+    }
+  });
+  return closest;
+}
 
 function mixHexColor(color, background, amount) {
   const channel = (hex, offset) => parseInt(hex.slice(offset, offset + 2), 16);
@@ -42,9 +91,47 @@ function normalizeBackground(background) {
   return BACKGROUND_NAMES.includes(background) ? background : "system";
 }
 
+function normalizeLayout(layout) {
+  if (layout === "linear") return "linear-down-right";
+  return [...STANDARD_LAYOUTS, ...STAGGERED_LAYOUTS, ...LINEAR_LAYOUTS].includes(layout) ? layout : "right";
+}
+
+function layoutLabel(layout) {
+  const normalized = normalizeLayout(layout);
+  return LAYOUT_OPTIONS.find(([value]) => value === normalized)?.[1] || "Right-facing";
+}
+
+function layoutFamily(layout) {
+  const normalized = normalizeLayout(layout);
+  if (normalized === "radial") return "radial";
+  if (normalized.startsWith("staggered-")) return "staggered";
+  if (normalized.startsWith("linear-")) return "linear";
+  return "tree";
+}
+
 function usesLightPalette(background) {
   const normalized = normalizeBackground(background);
   return normalized === "paper" || (normalized === "system" && document.body?.classList.contains("theme-light"));
+}
+
+function dragAutoPanDelta(position, size, preferredThreshold = 72, maximumSpeed = 14) {
+  const threshold = Math.max(1, Math.min(preferredThreshold, size / 3));
+  if (position < threshold) return maximumSpeed * Math.min(1, (threshold - position) / threshold);
+  if (position > size - threshold) return -maximumSpeed * Math.min(1, (position - (size - threshold)) / threshold);
+  return 0;
+}
+
+function normalizeViewport(viewport) {
+  if (!viewport || typeof viewport !== "object" || Array.isArray(viewport)) return null;
+  const scale = Number(viewport.scale);
+  const offsetX = Number(viewport.offsetX);
+  const offsetY = Number(viewport.offsetY);
+  if (![scale, offsetX, offsetY].every(Number.isFinite)) return null;
+  return {
+    scale: Math.min(2.5, Math.max(0.1, scale)),
+    offsetX: Math.min(10000000, Math.max(-10000000, offsetX)),
+    offsetY: Math.min(10000000, Math.max(-10000000, offsetY))
+  };
 }
 
 function createBlankMap(appearance = {}, centralNodeText = "Central idea", centralNodeNotes = "") {
@@ -52,11 +139,30 @@ function createBlankMap(appearance = {}, centralNodeText = "Central idea", centr
   if (centralNodeNotes) root.notes = centralNodeNotes;
   return {
     version: 1,
-    appearance: Object.assign({ background: "system", highlight: "blue", layout: "right", dimUnrelated: true, dimStrength: 50, randomBranchColors: false }, SPACING_DEFAULTS, NODE_STRENGTH_DEFAULTS, appearance),
+    appearance: Object.assign({ background: "system", highlight: "blue", layout: "right", dimUnrelated: true, dimStrength: 50, randomBranchColors: false, nodeColorStrength: "medium" }, SPACING_DEFAULTS, NODE_STRENGTH_DEFAULTS, appearance),
     rootIds: [root.id],
     nodes: { [root.id]: root },
     relationships: []
   };
+}
+
+const MAP_TEMPLATES = {
+  blank: { name: "Blank", description: "Start with only the central idea.", children: [] },
+  brainstorm: { name: "Brainstorm", description: "Collect possibilities before deciding what to develop.", children: ["Ideas", "Questions", "Possibilities", "Constraints", "Next steps"] },
+  study: { name: "Study Notes", description: "Organize concepts, supporting material, and review questions.", children: ["Key concepts", "Definitions", "Examples", "Questions", "Summary"] },
+  meeting: { name: "Meeting Notes", description: "Capture the agenda, discussion, decisions, and follow-up work.", children: ["Agenda", "Discussion", "Decisions", "Action items", "Parking lot"] },
+  project: { name: "Project Plan", description: "Outline the goals, work, schedule, resources, and risks.", children: ["Goals", "Tasks", "Milestones", "Resources", "Risks"] }
+};
+
+function createMapFromTemplate(templateId, appearance = {}, centralNodeText = "Central idea", centralNodeNotes = "") {
+  const map = createBlankMap(appearance, centralNodeText, centralNodeNotes);
+  const template = MAP_TEMPLATES[templateId] || MAP_TEMPLATES.blank;
+  template.children.forEach((text, index) => {
+    const id = `template-${templateId}-${index + 1}`;
+    map.nodes[id] = { id, text, parentId: "root", childIds: [], collapsed: false };
+    map.nodes.root.childIds.push(id);
+  });
+  return map;
 }
 
 function normalizeSingleRootMap(map, syntheticRootText = "Central idea") {
@@ -130,6 +236,13 @@ function normalizeSingleRootMap(map, syntheticRootText = "Central idea") {
     });
   }
   map.relationships = relationships;
+  if (map.infoCollapsed !== true) delete map.infoCollapsed;
+  if (map.graphCollapsed !== true) delete map.graphCollapsed;
+  if (map.nodeInfoCollapsed !== true) delete map.nodeInfoCollapsed;
+
+  const viewport = normalizeViewport(map.viewport);
+  if (viewport) map.viewport = viewport;
+  else delete map.viewport;
 
   let rootId = rootIds[0];
   if (rootIds.length > 1) {
@@ -150,7 +263,7 @@ function normalizeSingleRootMap(map, syntheticRootText = "Central idea") {
   const appearance = map.appearance && typeof map.appearance === "object" && !Array.isArray(map.appearance) ? map.appearance : {};
   appearance.background = normalizeBackground(appearance.background);
   if (!NODE_COLOR_NAMES.includes(appearance.highlight)) delete appearance.highlight;
-  if (!["right", "left", "down", "up", "radial"].includes(appearance.layout)) delete appearance.layout;
+  if (appearance.layout !== undefined) appearance.layout = normalizeLayout(appearance.layout);
   if (typeof appearance.dimUnrelated !== "boolean") delete appearance.dimUnrelated;
   if (typeof appearance.randomBranchColors !== "boolean") delete appearance.randomBranchColors;
   const clampSetting = (key, min, max) => {
@@ -165,6 +278,8 @@ function normalizeSingleRootMap(map, syntheticRootText = "Central idea") {
   clampSetting("nodePadding", 7, 24);
   clampSetting("trunkSpacing", 30, 70);
   Object.keys(NODE_STRENGTH_DEFAULTS).forEach((key) => clampSetting(key, 0, 100));
+  appearance.nodeColorStrength = inferNodeStrengthPreset(appearance);
+  Object.assign(appearance, NODE_STRENGTH_PRESETS[appearance.nodeColorStrength]);
   map.appearance = appearance;
 
   const inheritedRootColor = NODE_COLOR_NAMES.includes(appearance.highlight) ? appearance.highlight : "blue";
@@ -346,6 +461,97 @@ class NodeEditorModal extends Modal {
   }
 }
 
+class MapTemplatePreviewModal extends Modal {
+  constructor(app, map, templateName) {
+    super(app);
+    this.map = map;
+    this.templateName = templateName;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    this.modalEl.addClass("cmm-template-preview-window");
+    contentEl.createEl("h2", { text: `${this.templateName} preview` });
+    const canvas = contentEl.createDiv({ cls: "cmm-template-preview", attr: { role: "img", "aria-label": `${this.templateName} mind map preview` } });
+    const root = this.map.nodes[this.map.rootIds[0]];
+    const rootEl = canvas.createDiv({ cls: "cmm-template-preview-root", text: root.text });
+    if ((root.notes || "").trim()) rootEl.setAttr("title", root.notes.trim());
+    if (root.childIds.length) {
+      const branches = canvas.createDiv({ cls: "cmm-template-preview-branches" });
+      root.childIds.forEach((id) => branches.createDiv({ cls: "cmm-template-preview-node", text: this.map.nodes[id]?.text || "Idea" }));
+    } else {
+      canvas.createDiv({ cls: "cmm-template-preview-empty", text: "Add children to begin building the map." });
+    }
+    new Setting(contentEl).addButton((button) => button.setButtonText("Close").setCta().onClick(() => this.close()));
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
+class CreateMindMapModal extends Modal {
+  constructor(app, plugin, onSubmit) {
+    super(app);
+    this.plugin = plugin;
+    this.onSubmit = onSubmit;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    this.modalEl.addClass("cmm-create-map-window");
+    contentEl.createEl("h2", { text: "Create mind map" });
+    let title = "Central idea";
+    let notes = "";
+    let templateId = "blank";
+
+    const titleSetting = new Setting(contentEl).setName("Node title");
+    titleSetting.addText((text) => {
+      text.setValue(title).onChange((value) => { title = value; });
+      text.inputEl.addClass("cmm-node-editor-title");
+      window.setTimeout(() => { text.inputEl.focus(); text.inputEl.select(); }, 0);
+    });
+
+    const notesLabel = contentEl.createEl("label", { text: "Notes", cls: "cmm-node-editor-notes-label" });
+    const notesArea = contentEl.createEl("textarea", { cls: "cmm-create-map-notes" });
+    notesArea.setAttr("aria-label", "Notes");
+    notesLabel.htmlFor = notesArea.id = `cmm-create-map-notes-${Date.now()}`;
+    notesArea.addEventListener("input", () => { notes = notesArea.value; });
+
+    const templateSetting = new Setting(contentEl).setName("Starting template").setDesc(MAP_TEMPLATES.blank.description);
+    templateSetting.addDropdown((dropdown) => {
+      Object.entries(MAP_TEMPLATES).forEach(([id, template]) => dropdown.addOption(id, template.name));
+      dropdown.setValue(templateId).onChange((value) => {
+        templateId = MAP_TEMPLATES[value] ? value : "blank";
+        templateSetting.setDesc(MAP_TEMPLATES[templateId].description);
+      });
+    });
+    templateSetting.addButton((button) => button.setButtonText("Preview").onClick(() => {
+      const cleanTitle = title.trim() || "Central idea";
+      const map = createMapFromTemplate(templateId, this.plugin.getDefaultAppearance(), cleanTitle, notes.trim());
+      new MapTemplatePreviewModal(this.app, map, MAP_TEMPLATES[templateId].name).open();
+    }));
+
+    const submit = () => {
+      const cleanTitle = title.trim();
+      if (!cleanTitle) {
+        new Notice("Node title cannot be empty.");
+        return;
+      }
+      this.close();
+      this.onSubmit(cleanTitle, notes.trim(), templateId);
+    };
+    titleSetting.controlEl.querySelector("input")?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      submit();
+    });
+    new Setting(contentEl)
+      .addButton((button) => button.setButtonText("Create").setCta().onClick(submit))
+      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()));
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
 class DeleteSubtreeConfirmModal extends Modal {
   constructor(app, nodeText, nodeCount, onConfirm) {
     super(app);
@@ -388,12 +594,50 @@ class OutlineExportWarningModal extends Modal {
     const { contentEl } = this;
     contentEl.createEl("h2", { text: `Export ${this.format}?` });
     contentEl.createEl("p", {
-      text: `${this.format} export includes node titles and hierarchy only. Notes, relationships, folding, locks, colors, layout, and other appearance settings are omitted.`
+      text: `${this.format} export includes node titles and hierarchy only. Notes, relationships, collapsed states, locks, colors, layout, and other appearance settings are omitted.`
     });
     new Setting(contentEl)
       .addButton((button) => button.setButtonText("Continue export").setCta().onClick(() => {
         this.close();
         this.onConfirm();
+      }))
+      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()));
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+class CollapseToLevelModal extends Modal {
+  constructor(app, maximumLevel, initialLevel, onConfirm) {
+    super(app);
+    this.maximumLevel = Math.max(1, maximumLevel);
+    this.initialLevel = Math.min(this.maximumLevel, Math.max(1, initialLevel));
+    this.onConfirm = onConfirm;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h2", { text: "Collapse to level" });
+    contentEl.createEl("p", { text: "Level 1 keeps the central node and its immediate children visible. Higher levels reveal one additional generation." });
+    let level = this.initialLevel;
+    new Setting(contentEl)
+      .setName("Visible level")
+      .addText((text) => {
+        text.setValue(String(level));
+        text.inputEl.type = "number";
+        text.inputEl.min = "1";
+        text.inputEl.max = String(this.maximumLevel);
+        text.onChange((value) => {
+          const parsed = Number.parseInt(value, 10);
+          if (Number.isFinite(parsed)) level = Math.min(this.maximumLevel, Math.max(1, parsed));
+        });
+      });
+    new Setting(contentEl)
+      .addButton((button) => button.setButtonText("Collapse").setCta().onClick(() => {
+        this.close();
+        this.onConfirm(level);
       }))
       .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()));
   }
@@ -464,17 +708,24 @@ class MapSettingsModal extends Modal {
       dropdown.setValue(this.values.highlight).onChange((value) => { this.values.highlight = value; this.renderPreview(); });
     });
 
-    new Setting(controls).setName("Layout").addDropdown((dropdown) => {
-      ["right", "left", "down", "up", "radial"].forEach((layout) => dropdown.addOption(layout, layout.charAt(0).toUpperCase() + layout.slice(1)));
-      dropdown.setValue(this.values.layout).onChange((value) => { this.values.layout = value; this.renderPreview(true); });
-    });
+    const layoutSetting = new Setting(controls).setName("Layout").setDesc(`Current: ${layoutLabel(this.values.layout)}`);
+    layoutSetting.addButton((button) => button.setButtonText("Change layout…").onClick(() => {
+      new LayoutPickerModal(this.app, this.values.layout, this.values, (layout) => {
+        this.values.layout = layout;
+        layoutSetting.setDesc(`Current: ${layoutLabel(layout)}`);
+        this.renderPreview(true);
+      }).open();
+    }));
 
     new Setting(controls)
       .setName("Dim unrelated branches")
       .setDesc("When a non-root node is selected, fade branches outside its path and descendants.")
       .addToggle((toggle) => toggle
         .setValue(this.values.dimUnrelated !== false)
-        .onChange((value) => (this.values.dimUnrelated = value)));
+        .onChange((value) => {
+          this.values.dimUnrelated = value;
+          this.renderPreview();
+        }));
 
     new Setting(controls)
       .setName("Dim strength")
@@ -483,7 +734,10 @@ class MapSettingsModal extends Modal {
         .setLimits(0, 90, 5)
         .setValue(Number.isFinite(this.values.dimStrength) ? this.values.dimStrength : 50)
         .setDynamicTooltip()
-        .onChange((value) => (this.values.dimStrength = value)));
+        .onChange((value) => {
+          this.values.dimStrength = value;
+          this.renderPreview();
+        }));
 
     new Setting(controls)
       .setName("Random colors for new branches")
@@ -492,18 +746,18 @@ class MapSettingsModal extends Modal {
         .setValue(this.values.randomBranchColors === true)
         .onChange((value) => (this.values.randomBranchColors = value)));
 
-    controls.createEl("h3", { text: "Node color strength", cls: "cmm-spacing-heading" });
-    controls.createEl("p", { text: "Choose how strongly each node level uses its branch color. The rest is blended with the map background.", cls: "setting-item-description" });
-    controls.createEl("h4", { text: "Dark background", cls: "cmm-node-strength-heading" });
-    this.addStrengthSlider(controls, "Central node", "darkRootStrength");
-    this.addStrengthSlider(controls, "Level 1", "darkLevel1Strength");
-    this.addStrengthSlider(controls, "Level 2", "darkLevel2Strength");
-    this.addStrengthSlider(controls, "Level 3 and deeper", "darkDeepStrength");
-    controls.createEl("h4", { text: "Light and paper backgrounds", cls: "cmm-node-strength-heading" });
-    this.addStrengthSlider(controls, "Central node", "lightRootStrength");
-    this.addStrengthSlider(controls, "Level 1", "lightLevel1Strength");
-    this.addStrengthSlider(controls, "Level 2", "lightLevel2Strength");
-    this.addStrengthSlider(controls, "Level 3 and deeper", "lightDeepStrength");
+    new Setting(controls)
+      .setName("Node color strength")
+      .setDesc("Choose a coordinated color strength for the central node and each deeper level.")
+      .addDropdown((dropdown) => {
+        Object.entries(NODE_STRENGTH_OPTIONS).forEach(([value, label]) => dropdown.addOption(value, label));
+        dropdown.setValue(inferNodeStrengthPreset(this.values));
+        dropdown.onChange((value) => {
+          this.values.nodeColorStrength = NODE_STRENGTH_PRESETS[value] ? value : "medium";
+          Object.assign(this.values, NODE_STRENGTH_PRESETS[this.values.nodeColorStrength]);
+          this.renderPreview();
+        });
+      });
 
     controls.createEl("h3", { text: "Map spacing", cls: "cmm-spacing-heading" });
     this.addSpacingSlider(controls, "Level spacing", "Distance between parent and child levels. 100 is the original spacing.", "levelSpacing", 65, 300, 5);
@@ -512,11 +766,6 @@ class MapSettingsModal extends Modal {
     this.addSpacingSlider(controls, "Connector trunk spacing", "Percentage of the path used before connectors curve apart.", "trunkSpacing", 30, 70, 2);
 
     new Setting(controls)
-      .addButton((button) => button.setButtonText("Compact").onClick(() => {
-        Object.assign(this.values, SPACING_COMPACT);
-        this.spacingSliders.forEach(({ key, slider }) => slider.setValue(this.values[key]));
-        this.renderPreview();
-      }))
       .addButton((button) => button.setButtonText("Save").setCta().onClick(() => {
         this.close();
         this.onSave(this.values);
@@ -556,29 +805,6 @@ class MapSettingsModal extends Modal {
     this.spacingSliders.push({ key, slider: sliderComponent });
   }
 
-  addStrengthSlider(containerEl, name, key) {
-    const setting = new Setting(containerEl).setName(name);
-    let sliderComponent;
-    setting.addSlider((slider) => {
-      sliderComponent = slider;
-      slider.setLimits(0, 100, 5)
-        .setValue(this.values[key])
-        .setDynamicTooltip()
-        .onChange((value) => {
-          this.values[key] = value;
-          this.renderPreview();
-        });
-    });
-    setting.addExtraButton((button) => button
-      .setIcon("rotate-ccw")
-      .setTooltip(`Reset ${name.toLowerCase()}`)
-      .onClick(() => {
-        this.values[key] = NODE_STRENGTH_DEFAULTS[key];
-        sliderComponent.setValue(this.values[key]);
-        this.renderPreview();
-      }));
-  }
-
   renderPreview(resetView = false) {
     if (!this.previewEl) return;
     this.previewPanCleanup?.();
@@ -606,6 +832,9 @@ class MapSettingsModal extends Modal {
     previewView.mapData = { version: 1, appearance: Object.assign({}, this.values), rootIds: ["root"], nodes: sampleNodes };
     previewView.plugin = { getDefaultAppearance: () => ({ background: this.values.background, highlight: this.values.highlight, layout: this.values.layout }) };
     previewView.focusedId = null;
+    const dimmedIds = new Set(["build", "review", "finish"]);
+    const dimStrength = Math.min(90, Math.max(0, Number(this.values.dimStrength) || 0));
+    const dimOpacity = this.values.dimUnrelated === false ? 1 : 1 - dimStrength / 100;
     const positions = previewView.layout();
     const mode = this.values.layout || "right";
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -616,13 +845,25 @@ class MapSettingsModal extends Modal {
       up: { x: -120, y: -550, width: 1000, height: 750 },
       radial: { x: -1000, y: -80, width: 2000, height: 800 }
     };
+    LINEAR_LAYOUTS.forEach((layout) => {
+      const horizontalSequence = layout.startsWith("linear-left-") || layout.startsWith("linear-right-");
+      viewBoxes[layout] = horizontalSequence
+        ? { x: -100, y: -100, width: 1900, height: 1050 }
+        : { x: -100, y: -80, width: 1300, height: 1000 };
+    });
+    STAGGERED_LAYOUTS.forEach((layout) => {
+      const horizontal = layout === "staggered-left" || layout === "staggered-right";
+      viewBoxes[layout] = horizontal
+        ? { x: -950, y: -650, width: 1900, height: 1300 }
+        : { x: -750, y: -850, width: 1500, height: 1700 };
+    });
     const baseView = viewBoxes[mode] || viewBoxes.right;
     if (resetView || !this.previewViewState || this.previewViewState.mode !== mode) {
       this.previewViewState = { mode, ...baseView, baseWidth: baseView.width, baseHeight: baseView.height };
     }
     this.previewSvg = svg;
     this.applyPreviewViewBox();
-    svg.setAttribute("aria-label", "Live spacing preview");
+    svg.setAttribute("aria-label", "Live map settings preview");
     Object.values(sampleNodes).forEach((node) => {
       const from = positions[node.id];
       if (!from) return;
@@ -633,14 +874,23 @@ class MapSettingsModal extends Modal {
         if (!to) return;
         const toSize = previewView.nodeDimensions(to.depth);
         const toCenter = { x: to.x + toSize.width / 2, y: to.y + toSize.height / 2 };
-        const direction = mode === "radial" ? (toCenter.x >= fromCenter.x ? "right" : "left") : mode;
-        const start = previewView.connectorAnchor(from, fromSize, direction, true);
-        const end = previewView.connectorAnchor(to, toSize, direction, false);
+        const staggered = mode.startsWith("staggered-");
+        const staggeredTrunkDirection = staggered ? mode.slice("staggered-".length) : null;
+        const direction = mode === "radial"
+          ? (toCenter.x >= fromCenter.x ? "right" : "left")
+          : (staggered ? previewView.staggeredBranchDirection(childId, staggeredTrunkDirection) : mode);
+        const linear = direction.startsWith("linear-");
+        const points = linear ? previewView.linearConnectorPoints(from, fromSize, to, toSize, direction) : null;
+        const start = points?.start || previewView.connectorAnchor(from, fromSize, direction, true);
+        const end = points?.end || previewView.connectorAnchor(to, toSize, direction, false);
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", previewView.connectorPath(start, end, direction));
+        path.setAttribute("d", staggered && from.depth === 0
+          ? previewView.staggeredRootConnectorPath(from, fromSize, to, toSize, staggeredTrunkDirection, direction)
+          : (linear ? previewView.linearConnectorPath(start, end, direction) : previewView.connectorPath(start, end, direction)));
         path.setAttribute("class", "cmm-preview-edge");
         path.style.stroke = previewView.nodeDisplayColor(this.values.highlight, from.depth);
         path.style.strokeWidth = `${to.depth === 1 ? 4 : to.depth === 2 ? 3 : 2}px`;
+        if (dimmedIds.has(childId)) path.style.opacity = String(dimOpacity);
         svg.appendChild(path);
       });
     });
@@ -651,13 +901,15 @@ class MapSettingsModal extends Modal {
       rect.setAttribute("x", position.x); rect.setAttribute("y", position.y); rect.setAttribute("width", size.width); rect.setAttribute("height", size.height); rect.setAttribute("rx", "10");
       rect.setAttribute("class", position.depth === 0 ? "cmm-preview-root" : "cmm-preview-node");
       const normalizedBackground = normalizeBackground(this.values.background);
-      const background = normalizedBackground === "paper" ? "#f7f3e8" : dark ? "#11151c" : "#ffffff";
+      const background = normalizedBackground === "paper" ? "#f7f3e8" : dark ? "#181818" : "#ffffff";
       const prefix = dark ? "dark" : "light";
       const strengthKey = position.depth === 0 ? `${prefix}RootStrength` : position.depth === 1 ? `${prefix}Level1Strength` : position.depth === 2 ? `${prefix}Level2Strength` : `${prefix}DeepStrength`;
       rect.style.fill = mixHexColor(accent, background, this.values[strengthKey] / 100);
+      if (dimmedIds.has(nodeId)) rect.style.opacity = String(dimOpacity);
       const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
       text.setAttribute("x", position.x + size.width / 2); text.setAttribute("y", position.y + size.height / 2 + 5); text.setAttribute("class", `cmm-preview-label${position.depth === 0 ? " is-root" : ""}`); text.textContent = node.text;
       if (position.depth === 0) text.style.fill = color.text;
+      if (dimmedIds.has(nodeId)) text.style.opacity = String(dimOpacity);
       svg.append(rect, text);
     });
     this.previewEl.appendChild(svg);
@@ -785,6 +1037,99 @@ class MapSettingsModal extends Modal {
   }
 }
 
+class LayoutPickerModal extends MapSettingsModal {
+  constructor(app, currentLayout, appearance, onApply) {
+    super(app, Object.assign({}, SPACING_DEFAULTS, NODE_STRENGTH_DEFAULTS, appearance, { layout: normalizeLayout(currentLayout) }), () => {});
+    this.selectedLayout = normalizeLayout(currentLayout);
+    this.onApplyLayout = onApply;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    this.modalEl.addClass("cmm-layout-picker-window");
+    contentEl.addClass("cmm-layout-picker-modal");
+    contentEl.createEl("h2", { text: "Choose layout" });
+    const body = contentEl.createDiv({ cls: "cmm-layout-picker-body" });
+    const controls = body.createDiv({ cls: "cmm-layout-picker-controls" });
+    const previewPane = body.createDiv({ cls: "cmm-map-settings-preview-pane" });
+    const previewHeader = previewPane.createDiv({ cls: "cmm-preview-header" });
+    previewHeader.createEl("h3", { text: "Preview" });
+    const previewControls = previewHeader.createDiv({ cls: "cmm-preview-controls" });
+    this.previewZoomOutButton = previewControls.createEl("button", { text: "−", attr: { type: "button", "aria-label": "Zoom preview out" } });
+    this.previewZoomInButton = previewControls.createEl("button", { text: "+", attr: { type: "button", "aria-label": "Zoom preview in" } });
+    this.previewResetButton = previewControls.createEl("button", { text: "Reset view", attr: { type: "button" } });
+    this.previewZoomOutButton.addEventListener("click", () => this.zoomPreview(1.25));
+    this.previewZoomInButton.addEventListener("click", () => this.zoomPreview(0.8));
+    this.previewResetButton.addEventListener("click", () => this.resetPreviewView());
+    this.previewEl = previewPane.createDiv({ cls: "cmm-spacing-preview" });
+    this.selectionEl = controls.createDiv({ cls: "cmm-layout-picker-selection" });
+    this.renderLayoutControls();
+    this.renderPreview(true);
+    new Setting(contentEl)
+      .addButton((button) => button.setButtonText("Apply").setCta().onClick(() => {
+        this.close();
+        this.onApplyLayout(this.selectedLayout);
+      }))
+      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.close()));
+  }
+
+  chooseLayout(layout) {
+    this.selectedLayout = normalizeLayout(layout);
+    this.values.layout = this.selectedLayout;
+    this.renderLayoutControls();
+    this.renderPreview(true);
+  }
+
+  addChoiceGroup(parent, title, choices) {
+    parent.createEl("h3", { text: title });
+    const group = parent.createDiv({ cls: "cmm-layout-choice-grid" });
+    choices.forEach(([value, label]) => {
+      const button = group.createEl("button", { text: label, cls: value === this.selectedLayout ? "is-selected" : "" });
+      button.setAttr("type", "button");
+      button.setAttr("aria-pressed", value === this.selectedLayout ? "true" : "false");
+      button.addEventListener("click", () => this.chooseLayout(value));
+    });
+  }
+
+  renderLayoutControls() {
+    const parent = this.selectionEl;
+    parent.empty();
+    const family = layoutFamily(this.selectedLayout);
+    parent.createEl("h3", { text: "Layout style" });
+    const families = parent.createDiv({ cls: "cmm-layout-family-grid" });
+    [["tree", "Tree"], ["radial", "Radial"], ["staggered", "Staggered"], ["linear", "Linear"]].forEach(([value, label]) => {
+      const button = families.createEl("button", { text: label, cls: value === family ? "is-selected" : "" });
+      button.setAttr("type", "button");
+      button.setAttr("aria-pressed", value === family ? "true" : "false");
+      button.addEventListener("click", () => {
+        if (value === family) return;
+        const defaults = { tree: "right", radial: "radial", staggered: "staggered-right", linear: "linear-down-right" };
+        this.chooseLayout(defaults[value]);
+      });
+    });
+    if (family === "radial") {
+      parent.createEl("p", { text: "Branches are balanced automatically across both sides.", cls: "setting-item-description" });
+    } else if (family === "tree") {
+      this.addChoiceGroup(parent, "Direction", [["up", "↑ Up"], ["down", "↓ Down"], ["left", "← Left"], ["right", "→ Right"]]);
+    } else if (family === "staggered") {
+      this.addChoiceGroup(parent, "Trunk direction", [["staggered-up", "↑ Up"], ["staggered-down", "↓ Down"], ["staggered-left", "← Left"], ["staggered-right", "→ Right"]]);
+    } else {
+      const [, sequence, branch] = this.selectedLayout.split("-");
+      this.addChoiceGroup(parent, "Sequence direction", [
+        [`linear-up-${["left", "right"].includes(branch) ? branch : "right"}`, "↑ Up"],
+        [`linear-down-${["left", "right"].includes(branch) ? branch : "right"}`, "↓ Down"],
+        [`linear-left-${["up", "down"].includes(branch) ? branch : "down"}`, "← Left"],
+        [`linear-right-${["up", "down"].includes(branch) ? branch : "down"}`, "→ Right"]
+      ]);
+      const branchChoices = ["up", "down"].includes(sequence)
+        ? [[`linear-${sequence}-left`, "← Left"], [`linear-${sequence}-right`, "→ Right"]]
+        : [[`linear-${sequence}-up`, "↑ Up"], [`linear-${sequence}-down`, "↓ Down"]];
+      this.addChoiceGroup(parent, "Branch direction", branchChoices);
+    }
+    parent.createEl("p", { text: `Selected: ${layoutLabel(this.selectedLayout)}`, cls: "cmm-layout-current" });
+  }
+}
+
 class KempfSimpleMindMapView extends TextFileView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -793,9 +1138,14 @@ class KempfSimpleMindMapView extends TextFileView {
     this.draggedId = null;
     this.dropTargetId = null;
     this.dropPlacement = null;
+    this.dragAutoPanFrame = null;
+    this.dragAutoPanPointer = null;
     this.scale = 1;
     this.offsetX = 40;
     this.offsetY = 80;
+    this.viewportPersistenceReady = false;
+    this.viewportSaveTimer = null;
+    this.lastViewportKey = null;
     this.panning = false;
     this.backgroundPanMoved = false;
     this.undoStack = [];
@@ -822,10 +1172,16 @@ class KempfSimpleMindMapView extends TextFileView {
 
   getViewData() {
     if (this.invalidSource !== null) return this.invalidSource;
+    this.syncViewportData();
     return JSON.stringify(this.mapData || createBlankMap(), null, 2);
   }
 
   setViewData(data) {
+    this.viewportPersistenceReady = false;
+    if (this.viewportSaveTimer !== null) {
+      window.clearTimeout(this.viewportSaveTimer);
+      this.viewportSaveTimer = null;
+    }
     try {
       const parsed = JSON.parse(data);
       const normalized = normalizeSingleRootMap(parsed, this.file?.basename || "Central idea");
@@ -843,9 +1199,12 @@ class KempfSimpleMindMapView extends TextFileView {
     this.selectedId = null;
     this.focusedId = null;
     this.relationshipSourceId = null;
+    const restoredViewport = this.restoreViewport();
     this.syncAppearanceControls();
     this.render();
-    if (this.viewport) this.centerMap();
+    if (this.viewport && !restoredViewport) this.centerMap(false);
+    this.rememberCurrentViewportKey();
+    this.viewportPersistenceReady = true;
   }
 
   clear() {
@@ -868,7 +1227,12 @@ class KempfSimpleMindMapView extends TextFileView {
   }
 
   mapSnapshot() {
-    return JSON.stringify(this.mapData || createBlankMap(this.plugin.getDefaultAppearance()));
+    const snapshot = JSON.parse(JSON.stringify(this.mapData || createBlankMap(this.plugin.getDefaultAppearance())));
+    delete snapshot.viewport;
+    delete snapshot.infoCollapsed;
+    delete snapshot.graphCollapsed;
+    delete snapshot.nodeInfoCollapsed;
+    return JSON.stringify(snapshot);
   }
 
   recordUndoState() {
@@ -887,7 +1251,16 @@ class KempfSimpleMindMapView extends TextFileView {
       offsetX: this.offsetX,
       offsetY: this.offsetY
     };
+    const panelState = {
+      infoCollapsed: this.map.infoCollapsed === true,
+      graphCollapsed: this.map.graphCollapsed === true,
+      nodeInfoCollapsed: this.map.nodeInfoCollapsed === true
+    };
     this.mapData = JSON.parse(snapshot);
+    this.mapData.viewport = viewportState;
+    Object.entries(panelState).forEach(([key, value]) => {
+      if (value) this.mapData[key] = true;
+    });
     this.selectedId = null;
     this.focusedId = null;
     this.relationshipSourceId = null;
@@ -920,6 +1293,7 @@ class KempfSimpleMindMapView extends TextFileView {
   }
 
   async onOpen() {
+    this.viewportPersistenceReady = false;
     this.contentEl.empty();
     this.contentEl.addClass("kempfs-simple-mind-map-view");
     const appearance = this.getAppearance();
@@ -933,28 +1307,34 @@ class KempfSimpleMindMapView extends TextFileView {
 
     const toolbar = this.contentEl.createDiv({ cls: "cmm-toolbar" });
     if (this.isMobile) toolbar.addClass("is-mobile");
-    const title = toolbar.createEl("strong", { text: "The Kempf Simple Mind Map" });
-    title.setAttr("aria-label", "The Kempf Simple Mind Map");
-    this.focusStatus = toolbar.createDiv({ cls: "cmm-focus-status" });
-    this.focusStatusLabel = this.focusStatus.createSpan({ cls: "cmm-focus-status-label" });
-    this.focusExitButton = this.focusStatus.createEl("button", { text: "Exit focus", cls: "cmm-focus-exit" });
-    this.focusExitButton.addEventListener("click", () => this.clearBranchFocus());
+    const addDivider = () => toolbar.createDiv({ cls: "cmm-toolbar-divider" });
+    this.addToolbarButton(toolbar, "New mind map", "file-plus-2", () => this.plugin.createNewMap());
+    addDivider();
     this.undoButton = this.addToolbarButton(toolbar, "Undo", "undo-2", () => this.undo(), "↶");
     this.redoButton = this.addToolbarButton(toolbar, "Redo", "redo-2", () => this.redo(), "↷");
     if (this.isMobile) {
+      addDivider();
       this.addToolbarButton(toolbar, "Add child", "corner-down-right", () => this.mobileSelectedAction("child"), "+C");
       this.addToolbarButton(toolbar, "Add sibling", "plus", () => this.mobileSelectedAction("sibling"), "+S");
       this.addToolbarButton(toolbar, "Edit selected node", "pencil", () => this.mobileSelectedAction("edit"), "Edit");
       this.addToolbarButton(toolbar, "Full map", "maximize", () => this.showFullMap(), "Fit");
       this.addToolbarButton(toolbar, "More options", "ellipsis", () => this.showMobileBackgroundSheet(), "⋯");
     } else {
-      this.zoomOutButton = this.addToolbarButton(toolbar, "Zoom out", "minus", () => this.zoomBy(0.85), "−");
-      this.zoomInButton = this.addToolbarButton(toolbar, "Zoom in", "plus", () => this.zoomBy(1.18), "+");
+      addDivider();
+      this.zoomOutButton = this.addToolbarButton(toolbar, "Zoom out", "zoom-out", () => this.zoomBy(0.85), "−");
+      this.zoomLabel = toolbar.createSpan({ cls: "cmm-zoom-label" });
+      this.zoomInButton = this.addToolbarButton(toolbar, "Zoom in", "zoom-in", () => this.zoomBy(1.18), "+");
+      addDivider();
       this.addToolbarButton(toolbar, "Center map", "focus", () => this.centerMap());
       this.addToolbarButton(toolbar, "Search nodes", "search", () => this.showNodeSearch(), "Search");
-      this.addToolbarButton(toolbar, "Map settings", "settings", () => this.showMapSettings(), "Options");
-      this.addToolbarButton(toolbar, "Help", "circle-help", () => this.showHelp(), "?");
+      this.addToolbarButton(toolbar, "Map settings", "settings-2", () => this.showMapSettings(), "Options");
     }
+    this.focusStatus = toolbar.createDiv({ cls: "cmm-focus-status" });
+    this.focusStatusLabel = this.focusStatus.createSpan({ cls: "cmm-focus-status-label" });
+    this.focusExitButton = this.focusStatus.createEl("button", { text: "Unfocus", cls: "cmm-focus-exit" });
+    this.focusExitButton.addEventListener("click", () => this.clearBranchFocus());
+    toolbar.createDiv({ cls: "cmm-toolbar-spacer" });
+    if (!this.isMobile) this.addToolbarButton(toolbar, "Help", "circle-help", () => this.showHelp(), "?");
 
     this.viewport = this.contentEl.createDiv({ cls: "cmm-viewport", attr: { tabindex: "0" } });
     this.svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -962,6 +1342,7 @@ class KempfSimpleMindMapView extends TextFileView {
     this.viewport.appendChild(this.svg);
     this.scene = document.createElementNS("http://www.w3.org/2000/svg", "g");
     this.svg.appendChild(this.scene);
+    this.createInfoPanel();
 
     this.viewport.addEventListener("keydown", (event) => this.onKeyDown(event));
     this.viewport.addEventListener("wheel", (event) => this.onWheel(event), { passive: false });
@@ -978,7 +1359,9 @@ class KempfSimpleMindMapView extends TextFileView {
     this.installMobileGestures();
     this.installLongPress(this.svg, () => this.showMobileBackgroundSheet(), () => this.panning || this.mobileGesture?.type === "pinch");
     this.render();
-    this.centerMap();
+    if (!this.restoreViewport()) this.centerMap(false);
+    this.rememberCurrentViewportKey();
+    this.viewportPersistenceReady = true;
     this.updateToolbarButtons();
     this.installHeaderRename();
   }
@@ -1078,7 +1461,7 @@ class KempfSimpleMindMapView extends TextFileView {
 
   addToolbarButton(parent, label, icon, handler, displayText = label) {
     const button = parent.createEl("button", { cls: "clickable-icon", attr: { "aria-label": label } });
-    button.setText(displayText);
+    setIcon(button, icon);
     button.addEventListener("click", handler);
     return button;
   }
@@ -1216,6 +1599,7 @@ class KempfSimpleMindMapView extends TextFileView {
     if (this.redoButton) this.redoButton.disabled = this.redoStack.length === 0;
     if (this.zoomOutButton) this.zoomOutButton.disabled = this.scale <= 0.100001;
     if (this.zoomInButton) this.zoomInButton.disabled = this.scale >= 2.499999;
+    if (this.zoomLabel) this.zoomLabel.textContent = `${Math.round(this.scale * 100)}%`;
   }
 
   updateFocusStatus() {
@@ -1248,9 +1632,11 @@ class KempfSimpleMindMapView extends TextFileView {
 
   getAppearance() {
     if (!this.mapData) this.mapData = createBlankMap(this.plugin.getDefaultAppearance());
-    this.mapData.appearance = Object.assign({ dimUnrelated: true, dimStrength: 50 }, SPACING_DEFAULTS, NODE_STRENGTH_DEFAULTS, this.plugin.getDefaultAppearance(), this.mapData.appearance || {});
+    this.mapData.appearance = Object.assign({ dimUnrelated: true, dimStrength: 50, nodeColorStrength: "medium" }, SPACING_DEFAULTS, NODE_STRENGTH_DEFAULTS, this.plugin.getDefaultAppearance(), this.mapData.appearance || {});
     this.mapData.appearance.background = normalizeBackground(this.mapData.appearance.background);
-    if (!["right", "left", "down", "up", "radial"].includes(this.mapData.appearance.layout)) this.mapData.appearance.layout = "right";
+    this.mapData.appearance.nodeColorStrength = inferNodeStrengthPreset(this.mapData.appearance);
+    Object.assign(this.mapData.appearance, NODE_STRENGTH_PRESETS[this.mapData.appearance.nodeColorStrength]);
+    this.mapData.appearance.layout = normalizeLayout(this.mapData.appearance.layout);
     return this.mapData.appearance;
   }
 
@@ -1262,8 +1648,7 @@ class KempfSimpleMindMapView extends TextFileView {
   async setAppearance(background, highlight, layout) {
     const safeBackground = normalizeBackground(background);
     const safeHighlight = NODE_COLOR_NAMES.includes(highlight) ? highlight : "blue";
-    const allowedLayouts = ["right", "left", "down", "up", "radial"];
-    const safeLayout = allowedLayouts.includes(layout) ? layout : "right";
+    const safeLayout = normalizeLayout(layout);
     const current = this.getAppearance();
     if (current.background === safeBackground && current.highlight === safeHighlight && current.layout === safeLayout) return;
     const layoutChanged = current.layout !== safeLayout;
@@ -1306,6 +1691,26 @@ class KempfSimpleMindMapView extends TextFileView {
 
   relationshipsForNode(nodeId) {
     return (this.map.relationships || []).filter((relationship) => relationship.fromId === nodeId || relationship.toId === nodeId);
+  }
+
+  relationshipSummaryForNode(nodeId) {
+    const incoming = [];
+    const outgoing = [];
+    this.relationshipsForNode(nodeId).forEach((relationship) => {
+      const incomingNode = relationship.toId === nodeId ? this.getNode(relationship.fromId) : null;
+      const outgoingNode = relationship.fromId === nodeId ? this.getNode(relationship.toId) : null;
+      if (incomingNode) incoming.push(incomingNode);
+      if (outgoingNode) outgoing.push(outgoingNode);
+    });
+    return { incoming, outgoing };
+  }
+
+  relationshipLabels() {
+    return [...new Set((this.map.relationships || []).map((relationship) => {
+      const from = this.getNode(relationship.fromId);
+      const to = this.getNode(relationship.toId);
+      return from && to ? from.text : null;
+    }).filter(Boolean))];
   }
 
   startRelationship(nodeId) {
@@ -1528,7 +1933,7 @@ class KempfSimpleMindMapView extends TextFileView {
 
   promptForNode(title, parentId, afterSave, selectCreated = false, preserveSelectionId = null) {
     if (parentId && !this.ensureEditable(parentId)) return;
-    new NodeEditorModal(this.app, this.plugin, title, { text: "New idea", notes: "" }, async (text, notes) => {
+    new NodeEditorModal(this.app, this.plugin, title, { text: "New Item", notes: "" }, async (text, notes) => {
       this.recordUndoState();
       const node = this.createNode(text, parentId, notes);
       if (selectCreated) this.selectedId = node.id;
@@ -1792,6 +2197,141 @@ class KempfSimpleMindMapView extends TextFileView {
     }
   }
 
+  mapMaximumDepth() {
+    let maximum = 0;
+    const stack = this.map.rootIds.map((id) => ({ id, depth: 0 }));
+    while (stack.length) {
+      const { id, depth } = stack.pop();
+      const node = this.getNode(id);
+      if (!node) continue;
+      maximum = Math.max(maximum, depth);
+      node.childIds.forEach((childId) => stack.push({ id: childId, depth: depth + 1 }));
+    }
+    return maximum;
+  }
+
+  nodeDepth(nodeId) {
+    let depth = 0;
+    let node = this.getNode(nodeId);
+    const visited = new Set();
+    while (node?.parentId) {
+      if (visited.has(node.id)) return null;
+      visited.add(node.id);
+      node = this.getNode(node.parentId);
+      if (!node) return null;
+      depth += 1;
+    }
+    return node ? depth : null;
+  }
+
+  collapseActionState(nodeId = null) {
+    const nodes = Object.values(this.map?.nodes || {});
+    const branchIds = nodeId ? new Set(this.branchNodeIds(nodeId)) : null;
+    const branchNodes = branchIds ? nodes.filter((node) => branchIds.has(node.id)) : nodes;
+    const selectedLevel = Math.max(1, nodeId ? (this.nodeDepth(nodeId) ?? 1) : 1);
+    const maximumLevel = Math.max(1, this.mapMaximumDepth());
+    return {
+      canCollapseMap: nodes.some((node) => node.childIds.length && !node.collapsed),
+      canExpandMap: nodes.some((node) => node.childIds.length && node.collapsed),
+      canCollapseToLevel: Array.from({ length: maximumLevel }, (_, index) => index + 1).some((level) => this.mapCollapseWouldChange("collapse-level", level)),
+      canCollapseToSelectedLevel: this.mapCollapseWouldChange("collapse-level", selectedLevel),
+      canExpandBranch: branchNodes.some((node) => node.childIds.length && node.collapsed)
+    };
+  }
+
+  mapCollapseWouldChange(mode, visibleLevel = 1) {
+    const level = Math.max(1, Math.round(Number(visibleLevel) || 1));
+    const stack = this.map.rootIds.map((id) => ({ id, depth: 0 }));
+    while (stack.length) {
+      const { id, depth } = stack.pop();
+      const node = this.getNode(id);
+      if (!node) continue;
+      if (node.childIds.length) {
+        const collapsed = mode === "collapse-all" || (mode === "collapse-level" && depth >= level);
+        if (node.collapsed !== collapsed) return true;
+      }
+      node.childIds.forEach((childId) => stack.push({ id: childId, depth: depth + 1 }));
+    }
+    return false;
+  }
+
+  branchNodeIds(nodeId) {
+    const ids = [];
+    const stack = [nodeId];
+    const visited = new Set();
+    while (stack.length) {
+      const id = stack.pop();
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const node = this.getNode(id);
+      if (!node) continue;
+      ids.push(id);
+      node.childIds.forEach((childId) => stack.push(childId));
+    }
+    return ids;
+  }
+
+  async expandBranch(nodeId) {
+    if (!this.ensureValidMap()) return;
+    const changes = this.branchNodeIds(nodeId)
+      .map((id) => this.getNode(id))
+      .filter((node) => node?.childIds.length && node.collapsed);
+    if (!changes.length) return;
+    this.recordUndoState();
+    changes.forEach((node) => { node.collapsed = false; });
+    await this.saveMap();
+    this.render();
+  }
+
+  async setMapCollapse(mode, visibleLevel = 1) {
+    if (!this.ensureValidMap()) return;
+    const level = Math.max(1, Math.round(Number(visibleLevel) || 1));
+    const changes = [];
+    const stack = this.map.rootIds.map((id) => ({ id, depth: 0 }));
+    while (stack.length) {
+      const { id, depth } = stack.pop();
+      const node = this.getNode(id);
+      if (!node) continue;
+      let collapsed = false;
+      if (node.childIds.length) {
+        if (mode === "collapse-all") collapsed = true;
+        else if (mode === "collapse-level") collapsed = depth >= level;
+      }
+      if (node.collapsed !== collapsed) changes.push({ node, collapsed });
+      node.childIds.forEach((childId) => stack.push({ id: childId, depth: depth + 1 }));
+    }
+    if (!changes.length) {
+      if (this.focusedId) {
+        this.focusedId = null;
+        this.render();
+        this.centerMap();
+      }
+      return;
+    }
+    this.recordUndoState();
+    changes.forEach(({ node, collapsed }) => { node.collapsed = collapsed; });
+    this.focusedId = null;
+    this.selectedId = null;
+    await this.saveMap();
+    this.render();
+    this.centerMap();
+  }
+
+  collapseAll() {
+    return this.setMapCollapse("collapse-all");
+  }
+
+  expandAll() {
+    return this.setMapCollapse("expand-all");
+  }
+
+  showCollapseToLevel() {
+    const maximumLevel = Math.max(1, this.mapMaximumDepth());
+    const selectedDepth = this.selectedId ? this.nodeDepth(this.selectedId) : null;
+    const initialLevel = selectedDepth === null ? 1 : Math.max(1, selectedDepth);
+    new CollapseToLevelModal(this.app, maximumLevel, initialLevel, (level) => this.setMapCollapse("collapse-level", level)).open();
+  }
+
   isDescendant(candidateId, ancestorId) {
     let current = this.getNode(candidateId);
     while (current && current.parentId) {
@@ -1993,8 +2533,21 @@ class KempfSimpleMindMapView extends TextFileView {
         });
       });
     }
-    if (node.childIds.length) {
-      menu.addItem((item) => item.setTitle(node.collapsed ? "Expand children" : "Fold children").setIcon(node.collapsed ? "chevrons-right" : "chevrons-down").onClick(() => this.toggleCollapsed(nodeId)));
+    const collapseState = this.collapseActionState(nodeId);
+    const hasChildren = node.childIds.length > 0;
+    menu.addItem((item) => {
+      item.setTitle("Expand and collapse").setIcon("list-tree");
+      const submenu = item.setSubmenu();
+      submenu.addItem((choice) => choice.setTitle("Expand children").setIcon("chevrons-down").setDisabled(!hasChildren || !node.collapsed).onClick(() => this.toggleCollapsed(nodeId)));
+      submenu.addItem((choice) => choice.setTitle("Collapse children").setIcon("chevrons-right").setDisabled(!hasChildren || node.collapsed).onClick(() => this.toggleCollapsed(nodeId)));
+      submenu.addItem((choice) => choice.setTitle("Expand entire branch").setIcon("unfold-vertical").setDisabled(!collapseState.canExpandBranch).onClick(() => this.expandBranch(nodeId)));
+      submenu.addSeparator();
+      const level = Math.max(1, this.nodeDepth(nodeId) ?? 1);
+      submenu.addItem((choice) => choice.setTitle(`Collapse map to level ${level}`).setIcon("list-collapse").setDisabled(!collapseState.canCollapseToSelectedLevel).onClick(() => this.setMapCollapse("collapse-level", level)));
+      submenu.addItem((choice) => choice.setTitle("Collapse entire map").setIcon("chevrons-right").setDisabled(!collapseState.canCollapseMap).onClick(() => this.collapseAll()));
+      submenu.addItem((choice) => choice.setTitle("Expand entire map").setIcon("chevrons-down").setDisabled(!collapseState.canExpandMap).onClick(() => this.expandAll()));
+    });
+    if (hasChildren) {
       menu.addItem((item) => {
         item.setTitle("Sort children").setIcon("arrow-down-a-z");
         const submenu = item.setSubmenu();
@@ -2051,7 +2604,7 @@ class KempfSimpleMindMapView extends TextFileView {
       const otherName = this.getNode(otherId)?.text || "Missing node";
       items.push({ label: `Remove link to ${otherName}`, danger: true, action: () => this.removeRelationship(relationship.id) });
     });
-    if (node.childIds.length) items.push({ label: node.collapsed ? "Expand children" : "Fold children", action: () => this.toggleCollapsed(nodeId) });
+    items.push({ label: "Expand and collapse", action: () => this.showMobileCollapseSheet(nodeId) });
     if (node.childIds.length) items.push({ label: "Sort children", action: () => this.showMobileSortSheet(nodeId) });
     items.push({ label: "Change branch color", action: () => this.showMobileColorSheet(nodeId) });
     items.push({ label: this.focusedId === nodeId ? "Exit branch focus" : "Focus branch", action: () => this.focusedId === nodeId ? this.clearBranchFocus() : this.focusBranch(nodeId) });
@@ -2084,6 +2637,26 @@ class KempfSimpleMindMapView extends TextFileView {
     ]);
   }
 
+  showMobileCollapseSheet(nodeId = null) {
+    const node = nodeId ? this.getNode(nodeId) : null;
+    const state = this.collapseActionState(nodeId);
+    const items = [];
+    if (node) {
+      const hasChildren = node.childIds.length > 0;
+      items.push({ label: "Expand children", disabled: !hasChildren || !node.collapsed, action: () => this.toggleCollapsed(nodeId) });
+      items.push({ label: "Collapse children", disabled: !hasChildren || node.collapsed, action: () => this.toggleCollapsed(nodeId) });
+      items.push({ label: "Expand entire branch", disabled: !state.canExpandBranch, action: () => this.expandBranch(nodeId) });
+      items.push({ separator: true });
+      const level = Math.max(1, this.nodeDepth(nodeId) ?? 1);
+      items.push({ label: `Collapse map to level ${level}`, disabled: !state.canCollapseToSelectedLevel, action: () => this.setMapCollapse("collapse-level", level) });
+    } else {
+      items.push({ label: "Collapse to level…", disabled: !state.canCollapseToLevel, action: () => this.showCollapseToLevel() });
+    }
+    items.push({ label: "Collapse entire map", disabled: !state.canCollapseMap, action: () => this.collapseAll() });
+    items.push({ label: "Expand entire map", disabled: !state.canExpandMap, action: () => this.expandAll() });
+    this.showMobileSheet("Expand and collapse", items);
+  }
+
   showMobileBackgroundSheet() {
     const items = [
       { label: "New mind map", action: () => this.plugin.createNewMap() },
@@ -2093,7 +2666,10 @@ class KempfSimpleMindMapView extends TextFileView {
     ];
     if (this.focusedId) items.push({ label: "Exit branch focus", action: () => this.clearBranchFocus() });
     items.push({ separator: true });
+    items.push({ label: "Expand and collapse", action: () => this.showMobileCollapseSheet() });
+    items.push({ separator: true });
     items.push({ label: "Search nodes", action: () => this.showNodeSearch() });
+    items.push({ label: `Change layout… (${layoutLabel(this.getAppearance().layout)})`, action: () => this.showLayoutPicker() });
     items.push({ label: "Import", action: () => this.showMobileImportSheet() });
     items.push({ label: "Export", action: () => this.showMobileExportSheet() });
     items.push({ label: "Quick appearance", action: () => this.showMobileAppearanceSheet() });
@@ -2131,19 +2707,25 @@ class KempfSimpleMindMapView extends TextFileView {
     this.showMobileSheet("Quick appearance", [
       ...Object.entries(BACKGROUND_OPTIONS).map(([value, label]) => ({ label: `${appearance.background === value ? "✓ " : ""}${label}`, action: () => this.applyQuickMapSetting("background", value) })),
       { separator: true },
-      ...[
-        ["right", "Right-facing"], ["left", "Left-facing"], ["down", "Down-facing"], ["up", "Up-facing"], ["radial", "Radial"]
-      ].map(([value, label]) => ({ label: `${appearance.layout === value ? "✓ " : ""}${label}`, action: () => this.applyQuickMapSetting("layout", value) }))
+      { label: `Change layout… (${layoutLabel(appearance.layout)})`, action: () => this.showLayoutPicker() }
     ]);
   }
 
   showBackgroundMenu(event) {
     const menu = new Menu();
+    const collapseState = this.collapseActionState();
     menu.addItem((item) => item.setTitle("Center map").setIcon("focus").onClick(() => this.centerMap()));
     menu.addItem((item) => item.setTitle("Full map").setIcon("maximize").onClick(() => this.showFullMap()));
     if (this.focusedId) {
       menu.addItem((item) => item.setTitle("Exit branch focus").setIcon("scan-line").onClick(() => this.clearBranchFocus()));
     }
+    menu.addItem((item) => {
+      item.setTitle("Collapse and expand").setIcon("list-tree");
+      const submenu = item.setSubmenu();
+      submenu.addItem((subitem) => subitem.setTitle("Collapse entire map").setIcon("chevrons-right").setDisabled(!collapseState.canCollapseMap).onClick(() => this.collapseAll()));
+      submenu.addItem((subitem) => subitem.setTitle("Expand entire map").setIcon("chevrons-down").setDisabled(!collapseState.canExpandMap).onClick(() => this.expandAll()));
+      submenu.addItem((subitem) => subitem.setTitle("Collapse to level…").setIcon("list-collapse").setDisabled(!collapseState.canCollapseToLevel).onClick(() => this.showCollapseToLevel()));
+    });
     menu.addSeparator();
     menu.addItem((item) => item.setTitle("Search nodes").setIcon("search").onClick(() => this.showNodeSearch()));
     menu.addItem((item) => {
@@ -2192,18 +2774,8 @@ class KempfSimpleMindMapView extends TextFileView {
       });
       submenu.addSeparator();
       submenu.addItem((heading) => heading.setTitle("Layout").setDisabled(true));
-      [
-        { value: "right", label: "Right-facing" },
-        { value: "left", label: "Left-facing" },
-        { value: "down", label: "Down-facing" },
-        { value: "up", label: "Up-facing" },
-        { value: "radial", label: "Radial" }
-      ].forEach(({ value, label }) => {
-        submenu.addItem((choice) => choice
-          .setTitle(label)
-          .setChecked(appearance.layout === value)
-          .onClick(() => this.applyQuickMapSetting("layout", value)));
-      });
+      submenu.addItem((heading) => heading.setTitle(`Current: ${layoutLabel(appearance.layout)}`).setDisabled(true));
+      submenu.addItem((choice) => choice.setTitle("Change layout…").setIcon("layout-template").onClick(() => this.showLayoutPicker()));
       submenu.addSeparator();
       submenu.addItem((subitem) => subitem.setTitle("Open settings window…").setIcon("sliders-horizontal").onClick(() => this.showMapSettings()));
     });
@@ -2212,6 +2784,11 @@ class KempfSimpleMindMapView extends TextFileView {
 
   showMapSettings() {
     new MapSettingsModal(this.app, this.getAppearance(), (values) => this.applyMapSettings(values)).open();
+  }
+
+  showLayoutPicker() {
+    const appearance = this.getAppearance();
+    new LayoutPickerModal(this.app, appearance.layout, appearance, (layout) => this.applyQuickMapSetting("layout", layout)).open();
   }
 
   async applyQuickMapSetting(key, value) {
@@ -2225,22 +2802,21 @@ class KempfSimpleMindMapView extends TextFileView {
       return;
     }
     const current = this.getAppearance();
+    const nodeColorStrength = NODE_STRENGTH_PRESETS[values.nodeColorStrength] ? values.nodeColorStrength : inferNodeStrengthPreset(values);
     const next = {
       background: normalizeBackground(values.background),
       highlight: NODE_COLOR_NAMES.includes(values.highlight) ? values.highlight : "blue",
-      layout: ["right", "left", "down", "up", "radial"].includes(values.layout) ? values.layout : "right",
+      layout: normalizeLayout(values.layout),
       dimUnrelated: values.dimUnrelated !== false,
       dimStrength: Math.min(90, Math.max(0, Math.round(Number(values.dimStrength) || 0))),
       randomBranchColors: values.randomBranchColors === true,
       levelSpacing: Math.min(300, Math.max(65, Math.round(Number(values.levelSpacing) || SPACING_DEFAULTS.levelSpacing))),
       siblingSpacing: Math.min(300, Math.max(60, Math.round(Number(values.siblingSpacing) || SPACING_DEFAULTS.siblingSpacing))),
       nodePadding: Math.min(24, Math.max(7, Math.round(Number(values.nodePadding) || SPACING_DEFAULTS.nodePadding))),
-      trunkSpacing: Math.min(70, Math.max(30, Math.round(Number(values.trunkSpacing) || SPACING_DEFAULTS.trunkSpacing)))
+      trunkSpacing: Math.min(70, Math.max(30, Math.round(Number(values.trunkSpacing) || SPACING_DEFAULTS.trunkSpacing))),
+      nodeColorStrength
     };
-    Object.keys(NODE_STRENGTH_DEFAULTS).forEach((key) => {
-      const parsed = Number(values[key]);
-      next[key] = Number.isFinite(parsed) ? Math.min(100, Math.max(0, Math.round(parsed / 5) * 5)) : NODE_STRENGTH_DEFAULTS[key];
-    });
+    Object.assign(next, NODE_STRENGTH_PRESETS[nodeColorStrength]);
     if (Object.keys(next).every((key) => current[key] === next[key])) return;
     const layoutChanged = current.layout !== next.layout;
     const geometryChanged = layoutChanged || ["levelSpacing", "siblingSpacing", "nodePadding"].some((key) => current[key] !== next[key]);
@@ -2592,39 +3168,9 @@ class KempfSimpleMindMapView extends TextFileView {
     return { extension, label: labels[extension] || "File" };
   }
 
-  exportDefaultPath(filename) {
-    try {
-      const adapter = this.app.vault.adapter;
-      if (!adapter || typeof adapter.getBasePath !== "function") return filename;
-      const path = require("path");
-      const vaultRoot = adapter.getBasePath();
-      const parentPath = this.file && this.file.parent && this.file.parent.path !== "/" ? this.file.parent.path : "";
-      return path.join(vaultRoot, parentPath, filename);
-    } catch (error) {
-      return filename;
-    }
-  }
-
   async saveExportAs(filename, content, mimeType) {
     const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content;
     const type = this.exportFileType(filename);
-    try {
-      const electron = require("electron");
-      const dialog = electron.remote && electron.remote.dialog;
-      if (dialog && typeof dialog.showSaveDialog === "function") {
-        const result = await dialog.showSaveDialog({
-          title: "Export mind map",
-          defaultPath: this.exportDefaultPath(filename),
-          filters: [{ name: type.label, extensions: [type.extension] }]
-        });
-        if (result.canceled || !result.filePath) return false;
-        await require("fs").promises.writeFile(result.filePath, Buffer.from(bytes));
-        return true;
-      }
-    } catch (error) {
-      // Continue to browser/mobile save handling.
-    }
-
     if (typeof window.showSaveFilePicker === "function") {
       try {
         const handle = await window.showSaveFilePicker({
@@ -2743,7 +3289,7 @@ class KempfSimpleMindMapView extends TextFileView {
     const appearance = this.getAppearance();
     const light = usesLightPalette(appearance.background);
     const systemBackground = getComputedStyle(this.contentEl).getPropertyValue("--background-primary").trim();
-    const background = appearance.background === "paper" ? "#f7f3e8" : appearance.background === "dark" ? "#11151c" : systemBackground || (light ? "#ffffff" : "#11151c");
+    const background = appearance.background === "paper" ? "#f7f3e8" : appearance.background === "dark" ? "#181818" : systemBackground || (light ? "#ffffff" : "#181818");
     const textColor = light ? "#25231f" : "#eef2f8";
     const border = light ? "#b8c4d6" : "#374151";
     const dimStrength = Math.min(90, Math.max(0, Number(appearance.dimStrength) || 0));
@@ -2907,11 +3453,17 @@ class KempfSimpleMindMapView extends TextFileView {
     }[direction];
     if (!axis) return false;
     const layoutMode = this.getAppearance().layout || "right";
-    const horizontalHierarchy = layoutMode === "right" || layoutMode === "left" || layoutMode === "radial";
-    const hierarchyKey = horizontalHierarchy
-      ? direction === "ArrowLeft" || direction === "ArrowRight"
-      : direction === "ArrowUp" || direction === "ArrowDown";
-
+    const keyAxis = direction === "ArrowLeft" || direction === "ArrowRight" ? "horizontal" : "vertical";
+    let requiredRelation = null;
+    if (layoutMode.startsWith("linear-")) {
+      const sequenceDirection = layoutMode.split("-")[1];
+      const siblingAxis = sequenceDirection === "left" || sequenceDirection === "right" ? "horizontal" : "vertical";
+      requiredRelation = keyAxis === siblingAxis ? "sibling" : "hierarchy";
+    } else if (layoutMode.startsWith("staggered-") && currentNode.parentId) {
+      const trunkDirection = layoutMode.slice("staggered-".length);
+      const siblingAxis = trunkDirection === "left" || trunkDirection === "right" ? "horizontal" : "vertical";
+      requiredRelation = keyAxis === siblingAxis ? "sibling" : "hierarchy";
+    }
     let best = null;
     Object.entries(positions).forEach(([nodeId, position]) => {
       if (nodeId === currentId || !this.isVisibleInFocus(nodeId)) return;
@@ -2927,7 +3479,9 @@ class KempfSimpleMindMapView extends TextFileView {
       const score = distance + sideways * 2;
       const directlyRelated = candidateNode.parentId === currentId || currentNode.parentId === nodeId;
       const sibling = candidateNode.parentId === currentNode.parentId;
-      if ((hierarchyKey && !directlyRelated) || (!hierarchyKey && !sibling)) return;
+      if (!directlyRelated && !sibling) return;
+      if (requiredRelation === "sibling" && !sibling) return;
+      if (requiredRelation === "hierarchy" && !directlyRelated) return;
       if (!best || score < best.score || (score === best.score && forward < best.forward)) {
         best = { nodeId, score, forward };
       }
@@ -3098,6 +3652,50 @@ class KempfSimpleMindMapView extends TextFileView {
   applyTransform() {
     if (this.scene) this.scene.setAttribute("transform", `translate(${this.offsetX} ${this.offsetY}) scale(${this.scale})`);
     this.updateToolbarButtons();
+    this.scheduleViewportSave();
+    if (this.infoPanel && Math.round(this.scale * 100) !== this.lastInfoScalePercent) this.updateInfoPanel();
+  }
+
+  currentViewport() {
+    return normalizeViewport({ scale: this.scale, offsetX: this.offsetX, offsetY: this.offsetY });
+  }
+
+  syncViewportData() {
+    if (!this.mapData || this.invalidSource !== null) return null;
+    const viewport = this.currentViewport();
+    if (!viewport) return null;
+    viewport.scale = Math.round(viewport.scale * 10000) / 10000;
+    viewport.offsetX = Math.round(viewport.offsetX * 1000) / 1000;
+    viewport.offsetY = Math.round(viewport.offsetY * 1000) / 1000;
+    this.mapData.viewport = viewport;
+    return viewport;
+  }
+
+  rememberCurrentViewportKey() {
+    const viewport = this.syncViewportData();
+    this.lastViewportKey = viewport ? JSON.stringify(viewport) : null;
+  }
+
+  restoreViewport() {
+    const viewport = normalizeViewport(this.mapData?.viewport);
+    if (!viewport) return false;
+    this.scale = viewport.scale;
+    this.offsetX = viewport.offsetX;
+    this.offsetY = viewport.offsetY;
+    return true;
+  }
+
+  scheduleViewportSave() {
+    if (!this.viewportPersistenceReady || !this.mapData || this.invalidSource !== null) return;
+    const viewport = this.syncViewportData();
+    const key = viewport ? JSON.stringify(viewport) : null;
+    if (!key || key === this.lastViewportKey) return;
+    this.lastViewportKey = key;
+    if (this.viewportSaveTimer !== null) window.clearTimeout(this.viewportSaveTimer);
+    this.viewportSaveTimer = window.setTimeout(() => {
+      this.viewportSaveTimer = null;
+      if (this.invalidSource === null) this.requestSave();
+    }, 250);
   }
 
   visibleTree() {
@@ -3110,6 +3708,327 @@ class KempfSimpleMindMapView extends TextFileView {
     };
     this.map.rootIds.forEach((id) => visit(id, 0));
     return result;
+  }
+
+  nodeAncestorPath(nodeId) {
+    const path = [];
+    const visited = new Set();
+    let node = this.getNode(nodeId);
+    while (node && !visited.has(node.id)) {
+      visited.add(node.id);
+      path.unshift(node);
+      node = node.parentId ? this.getNode(node.parentId) : null;
+    }
+    return path;
+  }
+
+  nodeDescendantCount(nodeId) {
+    const root = this.getNode(nodeId);
+    if (!root) return 0;
+    let count = 0;
+    const stack = [...root.childIds];
+    const visited = new Set();
+    while (stack.length) {
+      const id = stack.pop();
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const node = this.getNode(id);
+      if (!node) continue;
+      count += 1;
+      stack.push(...node.childIds);
+    }
+    return count;
+  }
+
+  branchDistributionForNode(nodeId) {
+    const node = this.getNode(nodeId);
+    if (!node) return [];
+    const usedColors = new Set();
+    const branches = node.childIds.map((childId, index) => {
+      const child = this.getNode(childId);
+      if (!child) return null;
+      const preferredColor = this.effectiveNodeColor(childId);
+      let colorName = preferredColor;
+      if (usedColors.has(colorName)) {
+        colorName = NODE_COLOR_NAMES.find((name) => !usedColors.has(name)) || NODE_COLOR_NAMES[index % NODE_COLOR_NAMES.length];
+      }
+      usedColors.add(colorName);
+      return { node: child, count: 1 + this.nodeDescendantCount(childId), colorName, color: NODE_COLORS[colorName].hex };
+    }).filter(Boolean);
+    const total = branches.reduce((sum, branch) => sum + branch.count, 0);
+    return branches.map((branch) => Object.assign(branch, { percentage: total ? branch.count / total * 100 : 0 }));
+  }
+
+  groupedBranchDistribution(branches) {
+    if (branches.length < 2) return branches;
+    let grouped = [];
+    if (branches.length > 7) {
+      const largest = new Set([...branches].sort((a, b) => b.count - a.count).slice(0, 6));
+      grouped = branches.filter((branch) => !largest.has(branch));
+    } else {
+      const tiny = branches.filter((branch) => branch.percentage < 5);
+      if (tiny.length > 1) grouped = tiny;
+    }
+    if (!grouped.length) return branches;
+    const groupedSet = new Set(grouped);
+    const firstGroupedIndex = branches.findIndex((branch) => groupedSet.has(branch));
+    const count = grouped.reduce((sum, branch) => sum + branch.count, 0);
+    const percentage = grouped.reduce((sum, branch) => sum + branch.percentage, 0);
+    const other = { node: null, label: "Other", count, percentage, colorName: null, color: "#94a3b8", members: grouped };
+    const result = branches.filter((branch) => !groupedSet.has(branch));
+    result.splice(Math.min(firstGroupedIndex, result.length), 0, other);
+    return result;
+  }
+
+  branchLegendTooltip(branch, total) {
+    if (branch.members) {
+      const names = branch.members.map((member) => `${member.node.text}: ${member.count}`).join("\n");
+      return `Other\n${names}\nCombined: ${branch.count} / ${total} = ${branch.percentage.toFixed(1)}%`;
+    }
+    const nested = branch.count - 1;
+    return `${branch.node.text}\n1 child + ${nested} nested ${nested === 1 ? "descendant" : "descendants"} = ${branch.count}\n${branch.count} / ${total} = ${branch.percentage.toFixed(1)}%`;
+  }
+
+  appendBranchDonut(content, scopeNode, pinned) {
+    const allBranches = this.branchDistributionForNode(scopeNode.id);
+    const branches = this.groupedBranchDistribution(allBranches);
+    const collapsed = this.map.graphCollapsed === true;
+    const box = content.createDiv({ cls: `cmm-branch-graph-box${collapsed ? " is-collapsed" : ""}` });
+    const graphHeader = box.createDiv({ cls: "cmm-branch-graph-header" });
+    graphHeader.createSpan({ text: `Branches under “${scopeNode.text}”` });
+    const actions = graphHeader.createDiv({ cls: "cmm-section-header-actions" });
+    const pin = actions.createEl("button", { cls: `clickable-icon cmm-branch-pin${pinned ? " is-active" : ""}`, attr: { "aria-label": pinned ? "Unpin branch graph" : "Pin branch graph" } });
+    setIcon(pin, "pin");
+    pin.addEventListener("click", () => {
+      this.pinnedGraphNodeId = pinned ? null : scopeNode.id;
+      this.updateInfoPanel();
+    });
+    const collapse = actions.createEl("button", { cls: "clickable-icon cmm-section-collapse", attr: { "aria-label": collapsed ? "Expand branch graph" : "Collapse branch graph" } });
+    setIcon(collapse, collapsed ? "chevron-down" : "chevron-up");
+    collapse.addEventListener("click", async () => {
+      if (collapsed) delete this.map.graphCollapsed;
+      else this.map.graphCollapsed = true;
+      await this.saveMap();
+      this.updateInfoPanel();
+    });
+    if (collapsed) return;
+    if (!branches.length) {
+      box.createDiv({ cls: "cmm-info-hint", text: "This node has no child branches." });
+      return;
+    }
+    const chart = box.createDiv({ cls: "cmm-branch-chart" });
+    const donut = chart.createDiv({ cls: "cmm-branch-donut" });
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 120 120");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", `Branch sizes under ${scopeNode.text}`);
+    donut.appendChild(svg);
+    const circumference = 2 * Math.PI * 44;
+    let offset = 0;
+    branches.forEach((branch) => {
+      const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      const portion = branch.percentage / 100;
+      circle.setAttribute("cx", "60");
+      circle.setAttribute("cy", "60");
+      circle.setAttribute("r", "44");
+      circle.setAttribute("fill", "none");
+      circle.setAttribute("stroke", branch.color);
+      circle.setAttribute("stroke-width", "20");
+      circle.setAttribute("stroke-dasharray", `${portion * circumference} ${circumference}`);
+      circle.setAttribute("stroke-dashoffset", String(-offset * circumference));
+      circle.setAttribute("transform", "rotate(-90 60 60)");
+      circle.setAttribute("class", `cmm-branch-slice${branch.node ? " is-clickable" : ""}`);
+      const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      title.textContent = `${branch.label || branch.node.text}: ${branch.percentage.toFixed(1)}%`;
+      circle.appendChild(title);
+      if (branch.node) {
+        circle.setAttribute("tabindex", "0");
+        circle.setAttribute("role", "button");
+        const selectBranch = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.revealSearchMatch(branch.node.id);
+        };
+        circle.addEventListener("click", selectBranch);
+        circle.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") selectBranch(event);
+        });
+      }
+      svg.appendChild(circle);
+      offset += portion;
+    });
+    const branchTotal = allBranches.reduce((sum, branch) => sum + branch.count, 0);
+    const center = donut.createDiv({ cls: "cmm-branch-donut-center" });
+    center.createSpan({ text: String(branchTotal) });
+    center.createEl("small", { text: "descendants" });
+    const legend = chart.createDiv({ cls: "cmm-branch-legend" });
+    branches.forEach((branch) => {
+      const row = legend.createDiv({ cls: "cmm-branch-legend-row" });
+      row.createSpan({ cls: "cmm-branch-legend-color", attr: { style: `background:${branch.color}` } });
+      row.setAttribute("tabindex", "0");
+      row.createSpan({ cls: "cmm-branch-legend-name", text: branch.label || branch.node.text });
+      row.createSpan({ cls: "cmm-branch-legend-value", text: `${Math.round(branch.percentage)}%` });
+      const showDetails = () => this.showInfoTooltip(row, this.branchLegendTooltip(branch, branchTotal));
+      row.addEventListener("mouseenter", showDetails);
+      row.addEventListener("mouseleave", () => this.hideInfoTooltip());
+      row.addEventListener("focus", showDetails);
+      row.addEventListener("blur", () => this.hideInfoTooltip());
+    });
+  }
+
+  visibleNodeCount() {
+    let count = 0;
+    const visit = (id) => {
+      const node = this.getNode(id);
+      if (!node || !this.isVisibleInFocus(id)) return;
+      count += 1;
+      if (!node.collapsed) node.childIds.forEach(visit);
+    };
+    this.map.rootIds.forEach(visit);
+    return count;
+  }
+
+  infoNodeForSelection(selectedId) {
+    const pinned = this.pinnedInfoNodeId ? this.getNode(this.pinnedInfoNodeId) : null;
+    if (this.pinnedInfoNodeId && !pinned) this.pinnedInfoNodeId = null;
+    return pinned || (selectedId ? this.getNode(selectedId) : null);
+  }
+
+  createInfoPanel() {
+    this.infoPanel?.remove();
+    const panel = this.viewport.createDiv({ cls: "cmm-info-panel" });
+    panel.addEventListener("pointerdown", (event) => event.stopPropagation());
+    panel.addEventListener("wheel", (event) => event.stopPropagation());
+    this.infoPanel = panel;
+    this.updateInfoPanel();
+  }
+
+  hideInfoTooltip() {
+    this.infoTooltipEl?.remove();
+    this.infoTooltipEl = null;
+  }
+
+  showInfoTooltip(anchor, text) {
+    this.hideInfoTooltip();
+    if (!text || this.isMobile) return;
+    const tooltip = document.body.createDiv({ cls: "cmm-node-tooltip cmm-info-relationship-tooltip", text, attr: { role: "tooltip" } });
+    tooltip.style.visibility = "hidden";
+    const anchorRect = anchor.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const margin = 10;
+    const left = Math.min(window.innerWidth - tooltipRect.width - margin, Math.max(margin, anchorRect.left + anchorRect.width / 2 - tooltipRect.width / 2));
+    const above = anchorRect.top - tooltipRect.height - 8;
+    const top = above >= margin ? above : Math.min(window.innerHeight - tooltipRect.height - margin, anchorRect.bottom + 8);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+    tooltip.style.visibility = "visible";
+    this.infoTooltipEl = tooltip;
+  }
+
+  updateInfoPanel() {
+    const panel = this.infoPanel;
+    if (!panel || !this.mapData) return;
+    this.hideInfoTooltip();
+    const collapsed = this.map.infoCollapsed === true;
+    this.lastInfoScalePercent = Math.round(this.scale * 100);
+    panel.empty();
+    panel.toggleClass("is-collapsed", collapsed);
+    const header = panel.createDiv({ cls: "cmm-info-header" });
+    header.createSpan({ text: "Map info" });
+    const toggle = header.createEl("button", { cls: "clickable-icon", attr: { "aria-label": collapsed ? "Expand map info" : "Collapse map info" } });
+    setIcon(toggle, collapsed ? "chevron-down" : "chevron-up");
+    toggle.addEventListener("click", async () => {
+      if (collapsed) delete this.map.infoCollapsed;
+      else this.map.infoCollapsed = true;
+      await this.saveMap();
+      this.updateInfoPanel();
+    });
+    if (collapsed) return;
+    const content = panel.createDiv({ cls: "cmm-info-content" });
+    const selected = this.selectedId ? this.getNode(this.selectedId) : null;
+    content.createDiv({ cls: "cmm-info-title", text: this.file?.basename || "Mind map" });
+    const total = Object.keys(this.map.nodes).length;
+    const visible = this.visibleNodeCount();
+    const levels = this.mapMaximumDepth() + 1;
+    const collapsedBranches = Object.values(this.map.nodes).filter((node) => node.childIds.length && node.collapsed).length;
+    const relationships = (this.map.relationships || []).length;
+    content.createDiv({ cls: "cmm-info-stat", text: `${total} ${total === 1 ? "node" : "nodes"} · ${visible} visible` });
+    content.createDiv({ cls: "cmm-info-stat", text: `${levels} ${levels === 1 ? "level" : "levels"} · ${collapsedBranches} collapsed` });
+    const relationshipStat = content.createDiv({ cls: `cmm-info-stat${relationships ? " cmm-info-relationship-count" : ""}`, text: `${relationships} relationship ${relationships === 1 ? "link" : "links"}` });
+    const relationshipLabels = this.relationshipLabels();
+    if (relationshipLabels.length) {
+      relationshipStat.setAttribute("tabindex", "0");
+      const descriptionId = `cmm-relationship-description-${Math.random().toString(36).slice(2, 9)}`;
+      content.createSpan({ cls: "cmm-screen-reader-only", text: `Linking nodes: ${relationshipLabels.join(", ")}`, attr: { id: descriptionId } });
+      relationshipStat.setAttribute("aria-describedby", descriptionId);
+      const showRelationships = () => this.showInfoTooltip(relationshipStat, relationshipLabels.join("\n"));
+      relationshipStat.addEventListener("mouseenter", showRelationships);
+      relationshipStat.addEventListener("mouseleave", () => this.hideInfoTooltip());
+      relationshipStat.addEventListener("focus", showRelationships);
+      relationshipStat.addEventListener("blur", () => this.hideInfoTooltip());
+    }
+    let pinnedScope = this.pinnedGraphNodeId ? this.getNode(this.pinnedGraphNodeId) : null;
+    if (this.pinnedGraphNodeId && !pinnedScope) this.pinnedGraphNodeId = null;
+    const chartScope = pinnedScope || selected || this.getNode(this.map.rootIds[0]);
+    if (chartScope) this.appendBranchDonut(content, chartScope, Boolean(pinnedScope));
+    const infoNode = this.infoNodeForSelection(this.selectedId);
+    const infoPinned = Boolean(this.pinnedInfoNodeId && infoNode?.id === this.pinnedInfoNodeId);
+    if (!infoNode) {
+      content.createDiv({ cls: "cmm-info-hint", text: "Select a node to see its details." });
+      return;
+    }
+
+    const nodeCollapsed = this.map.nodeInfoCollapsed === true;
+    const nodeBox = content.createDiv({ cls: `cmm-node-info-box${nodeCollapsed ? " is-collapsed" : ""}` });
+    const nodeHeader = nodeBox.createDiv({ cls: "cmm-node-info-header" });
+    nodeHeader.createSpan({ text: infoPinned ? "Pinned node" : "Selected node" });
+    const nodeActions = nodeHeader.createDiv({ cls: "cmm-section-header-actions" });
+    const nodePin = nodeActions.createEl("button", { cls: `clickable-icon cmm-node-info-pin${infoPinned ? " is-active" : ""}`, attr: { "aria-label": infoPinned ? "Unpin node information" : "Pin node information" } });
+    setIcon(nodePin, "pin");
+    nodePin.addEventListener("click", () => {
+      this.pinnedInfoNodeId = infoPinned ? null : infoNode.id;
+      this.updateInfoPanel();
+    });
+    const nodeCollapse = nodeActions.createEl("button", { cls: "clickable-icon cmm-section-collapse", attr: { "aria-label": nodeCollapsed ? "Expand node information" : "Collapse node information" } });
+    setIcon(nodeCollapse, nodeCollapsed ? "chevron-down" : "chevron-up");
+    nodeCollapse.addEventListener("click", async () => {
+      if (nodeCollapsed) delete this.map.nodeInfoCollapsed;
+      else this.map.nodeInfoCollapsed = true;
+      await this.saveMap();
+      this.updateInfoPanel();
+    });
+    if (nodeCollapsed) return;
+    nodeBox.createDiv({ cls: "cmm-info-title", text: infoNode.text });
+    const depth = (this.nodeDepth(infoNode.id) ?? 0) + 1;
+    const parent = infoNode.parentId ? this.getNode(infoNode.parentId) : null;
+    const siblingIndex = parent ? parent.childIds.indexOf(infoNode.id) : -1;
+    const siblingText = parent && siblingIndex >= 0 ? ` · Child ${siblingIndex + 1} of ${parent.childIds.length}` : "";
+    nodeBox.createDiv({ cls: "cmm-info-stat", text: `Level ${depth}${siblingText}` });
+    const descendants = this.nodeDescendantCount(infoNode.id);
+    nodeBox.createDiv({ cls: "cmm-info-stat", text: `${infoNode.childIds.length} ${infoNode.childIds.length === 1 ? "child" : "children"} · ${descendants} ${descendants === 1 ? "descendant" : "descendants"}` });
+    const relationshipSummary = this.relationshipSummaryForNode(infoNode.id);
+    if (relationshipSummary.outgoing.length) {
+      nodeBox.createDiv({ cls: "cmm-info-stat cmm-info-relationship", text: `Links to: ${relationshipSummary.outgoing.map((node) => node.text).join(", ")}` });
+    }
+    if (relationshipSummary.incoming.length) {
+      nodeBox.createDiv({ cls: "cmm-info-stat cmm-info-relationship", text: `Linked from: ${relationshipSummary.incoming.map((node) => node.text).join(", ")}` });
+    }
+    if ((infoNode.notes || "").trim()) {
+      nodeBox.createDiv({ cls: "cmm-info-label", text: "Notes" });
+      const preview = infoNode.notes.trim().replace(/\s+/g, " ");
+      const notes = nodeBox.createEl("button", { cls: "cmm-info-notes", text: preview.length > 150 ? `${preview.slice(0, 147)}…` : preview, attr: { type: "button" } });
+      notes.addEventListener("click", () => this.editNode(infoNode.id));
+    }
+    const states = [];
+    if (infoNode.childIds.length && infoNode.collapsed) states.push("Collapsed");
+    if (this.lockingNodeId(infoNode.id)) states.push("Locked");
+    if (this.focusedId === infoNode.id) states.push("Focused");
+    if (infoNode.colorSource === "manual") states.push("Manual color");
+    if (["asc", "desc"].includes(infoNode.childSort)) states.push(infoNode.childSort === "asc" ? "A–Z sort" : "Z–A sort");
+    if (states.length) {
+      const badges = nodeBox.createDiv({ cls: "cmm-info-badges" });
+      states.forEach((state) => badges.createSpan({ text: state }));
+    }
   }
 
   nodeDimensions(depth) {
@@ -3195,6 +4114,8 @@ class KempfSimpleMindMapView extends TextFileView {
   layout() {
     const mode = this.getAppearance().layout || "right";
     if (mode === "radial") return this.radialLayout();
+    if (mode.startsWith("staggered-")) return this.staggeredLayout(mode.slice("staggered-".length));
+    if (mode.startsWith("linear-")) return this.linearLayout(mode);
     const positions = {};
     const vertical = mode === "down" || mode === "up";
     const siblingScale = this.getAppearance().siblingSpacing / SPACING_DEFAULTS.siblingSpacing;
@@ -3210,6 +4131,114 @@ class KempfSimpleMindMapView extends TextFileView {
           : { ...position, y: position.y + shift };
       });
       crossCursor += crossMax - crossMin + 96 * siblingScale;
+    });
+    return positions;
+  }
+
+  staggeredLayout(direction) {
+    const positions = {};
+    const horizontal = direction === "left" || direction === "right";
+    const positive = direction === "right" || direction === "down";
+    const appearance = this.getAppearance();
+    const siblingScale = appearance.siblingSpacing / SPACING_DEFAULTS.siblingSpacing;
+    const levelScale = appearance.levelSpacing / SPACING_DEFAULTS.levelSpacing;
+    const rootId = this.layoutRootIds()[0];
+    const root = this.getNode(rootId);
+    if (!root) return positions;
+    const rootSize = this.nodeDimensions(0);
+    positions[rootId] = { x: -rootSize.width / 2, y: -rootSize.height / 2, depth: 0 };
+    const primaryRootHalf = horizontal ? rootSize.width / 2 : rootSize.height / 2;
+    const primaryGap = Math.max(90, 150 * levelScale);
+    const bandGap = Math.max(36, 70 * siblingScale);
+    const staggerStep = Math.max(24, 38 * siblingScale);
+    const crossGap = Math.max(70, 110 * siblingScale);
+    const initialCursor = primaryRootHalf + primaryGap;
+    const sideCursors = [initialCursor, initialCursor];
+    let previousBandStart = initialCursor - staggerStep;
+
+    this.visibleChildren(root).forEach((branchId, index) => {
+      const branchDirection = horizontal
+        ? (index % 2 === 0 ? "up" : "down")
+        : (index % 2 === 0 ? "left" : "right");
+      const tree = this.buildDirectionalTree(branchId, branchDirection, 1);
+      const primaryMin = horizontal ? tree.bounds.minX : tree.bounds.minY;
+      const primaryMax = horizontal ? tree.bounds.maxX : tree.bounds.maxY;
+      const crossMin = horizontal ? tree.bounds.minY : tree.bounds.minX;
+      const crossMax = horizontal ? tree.bounds.maxY : tree.bounds.maxX;
+      const primarySpan = primaryMax - primaryMin;
+      const negativeSide = branchDirection === "up" || branchDirection === "left";
+      const sideIndex = negativeSide ? 0 : 1;
+      const bandStart = Math.max(sideCursors[sideIndex], previousBandStart + staggerStep);
+      const primaryShift = positive ? bandStart - primaryMin : -bandStart - primaryMax;
+      const crossShift = negativeSide ? -crossGap - crossMax : crossGap - crossMin;
+      Object.entries(tree.positions).forEach(([nodeId, position]) => {
+        positions[nodeId] = horizontal
+          ? { ...position, x: position.x + primaryShift, y: position.y + crossShift }
+          : { ...position, x: position.x + crossShift, y: position.y + primaryShift };
+      });
+      sideCursors[sideIndex] = bandStart + primarySpan + bandGap;
+      previousBandStart = bandStart;
+    });
+    return positions;
+  }
+
+  staggeredBranchDirection(nodeId, trunkDirection) {
+    const rootId = this.map.rootIds[0];
+    let node = this.getNode(nodeId);
+    while (node?.parentId && node.parentId !== rootId) node = this.getNode(node.parentId);
+    if (!node || node.parentId !== rootId) return trunkDirection;
+    const index = Math.max(0, this.getNode(rootId)?.childIds.indexOf(node.id) ?? 0);
+    const horizontal = trunkDirection === "left" || trunkDirection === "right";
+    return horizontal
+      ? (index % 2 === 0 ? "up" : "down")
+      : (index % 2 === 0 ? "left" : "right");
+  }
+
+  staggeredRootConnectorPath(from, fromSize, to, toSize, trunkDirection, branchDirection) {
+    const start = this.connectorAnchor(from, fromSize, trunkDirection, true);
+    const end = this.connectorAnchor(to, toSize, branchDirection, false);
+    const horizontal = trunkDirection === "left" || trunkDirection === "right";
+    return horizontal
+      ? `M ${start.x} ${start.y} L ${end.x} ${start.y} L ${end.x} ${end.y}`
+      : `M ${start.x} ${start.y} L ${start.x} ${end.y} L ${end.x} ${end.y}`;
+  }
+
+  linearLayout(mode) {
+    const positions = {};
+    const appearance = this.getAppearance();
+    const siblingScale = appearance.siblingSpacing / SPACING_DEFAULTS.siblingSpacing;
+    const levelScale = appearance.levelSpacing / SPACING_DEFAULTS.levelSpacing;
+    const rowGap = Math.max(16, 38 * siblingScale);
+    const indent = Math.max(145, 236 * levelScale);
+    let rowCursor = 0;
+    let maximumX = 0;
+    let maximumY = 0;
+    const [, sequenceDirection, branchDirection] = mode.split("-");
+    const verticalSequence = sequenceDirection === "up" || sequenceDirection === "down";
+
+    const place = (id, depth) => {
+      const node = this.getNode(id);
+      if (!node || !this.isVisibleInFocus(id)) return;
+      const size = this.nodeDimensions(depth);
+      const x = verticalSequence ? depth * indent : rowCursor;
+      const y = verticalSequence ? rowCursor : depth * indent;
+      positions[id] = { x, y, depth };
+      maximumX = Math.max(maximumX, x + size.width);
+      maximumY = Math.max(maximumY, y + size.height);
+      rowCursor += (verticalSequence ? size.height : size.width) + rowGap;
+      this.visibleChildren(node).forEach((childId) => place(childId, depth + 1));
+    };
+
+    this.layoutRootIds().forEach((rootId, index) => {
+      if (index) rowCursor += rowGap * 2;
+      place(rootId, 0);
+    });
+    const goesLeft = sequenceDirection === "left" || branchDirection === "left";
+    const goesUp = sequenceDirection === "up" || branchDirection === "up";
+    Object.values(positions).forEach((position) => {
+      const size = this.nodeDimensions(position.depth);
+      if (goesLeft) position.x = maximumX - size.width - position.x;
+      if (goesUp) position.y = maximumY - size.height - position.y;
     });
     return positions;
   }
@@ -3291,6 +4320,45 @@ class KempfSimpleMindMapView extends TextFileView {
     return { x: centerX, y: outgoing ? position.y : position.y + size.height };
   }
 
+  linearConnectorPoints(from, fromSize, to, toSize, direction) {
+    const [, sequenceDirection, branchDirection] = direction.split("-");
+    const verticalSequence = sequenceDirection === "up" || sequenceDirection === "down";
+    if (!verticalSequence) {
+      const sequenceLeft = sequenceDirection === "left";
+      const branchUp = branchDirection === "up";
+      return {
+        start: {
+          x: sequenceLeft ? from.x : from.x + fromSize.width,
+          y: branchUp ? from.y + fromSize.height - 16 : from.y + 16
+        },
+        end: {
+          x: to.x + toSize.width / 2,
+          y: branchUp ? to.y + toSize.height : to.y
+        }
+      };
+    }
+    const goesLeft = branchDirection === "left";
+    const goesUp = sequenceDirection === "up";
+    return {
+      start: {
+        x: goesLeft ? from.x + fromSize.width - 16 : from.x + 16,
+        y: goesUp ? from.y : from.y + fromSize.height
+      },
+      end: {
+        x: goesLeft ? to.x + toSize.width : to.x,
+        y: to.y + toSize.height / 2
+      }
+    };
+  }
+
+  linearConnectorPath(start, end, direction) {
+    const sequenceDirection = direction.split("-")[1];
+    const verticalSequence = sequenceDirection === "up" || sequenceDirection === "down";
+    return verticalSequence
+      ? `M ${start.x} ${start.y} L ${start.x} ${end.y} L ${end.x} ${end.y}`
+      : `M ${start.x} ${start.y} L ${end.x} ${start.y} L ${end.x} ${end.y}`;
+  }
+
   svgEl(tag, attrs = {}) {
     const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
     Object.entries(attrs).forEach(([key, value]) => element.setAttribute(key, String(value)));
@@ -3322,7 +4390,7 @@ class KempfSimpleMindMapView extends TextFileView {
     const color = NODE_COLORS[colorName] || NODE_COLORS.blue;
     const appearance = this.getAppearance();
     const light = usesLightPalette(appearance.background);
-    const background = appearance.background === "paper" ? "#f7f3e8" : light ? "#ffffff" : "#11151c";
+    const background = appearance.background === "paper" ? "#f7f3e8" : light ? "#ffffff" : "#181818";
     const amount = depth === 0 ? 1 : depth === 1 ? 0.7 : 0.55;
     return mixHexColor(color.hex, background, amount);
   }
@@ -3343,6 +4411,8 @@ class KempfSimpleMindMapView extends TextFileView {
     if (!children.length) return;
     const fromSize = this.nodeDimensions(from.depth);
     const layoutMode = this.getAppearance().layout || "right";
+    const staggered = layoutMode.startsWith("staggered-");
+    const staggeredTrunkDirection = staggered ? layoutMode.slice("staggered-".length) : null;
     const fromCenter = { x: from.x + fromSize.width / 2, y: from.y + fromSize.height / 2 };
     children.forEach((to) => {
       const toSize = this.nodeDimensions(to.depth);
@@ -3350,13 +4420,17 @@ class KempfSimpleMindMapView extends TextFileView {
       const dx = toCenter.x - fromCenter.x;
       const direction = layoutMode === "radial"
         ? (dx >= 0 ? "right" : "left")
-        : layoutMode;
-      const start = this.connectorAnchor(from, fromSize, direction, true);
-      const end = this.connectorAnchor(to, toSize, direction, false);
+        : (staggered ? this.staggeredBranchDirection(to.nodeId, staggeredTrunkDirection) : layoutMode);
+      const linear = direction.startsWith("linear-");
+      const points = linear ? this.linearConnectorPoints(from, fromSize, to, toSize, direction) : null;
+      const start = points?.start || this.connectorAnchor(from, fromSize, direction, true);
+      const end = points?.end || this.connectorAnchor(to, toSize, direction, false);
       this.appendEdge(
-        this.connectorPath(start, end, direction),
+        staggered && from.depth === 0
+          ? this.staggeredRootConnectorPath(from, fromSize, to, toSize, staggeredTrunkDirection, direction)
+          : (linear ? this.linearConnectorPath(start, end, direction) : this.connectorPath(start, end, direction)),
         this.edgeLevelClass(to.depth),
-        this.edgeExtraClass("", to.nodeId),
+        this.edgeExtraClass(linear ? "is-linear" : "", to.nodeId),
         this.effectiveNodeColor(from.nodeId),
         from.depth
       );
@@ -3437,7 +4511,7 @@ class KempfSimpleMindMapView extends TextFileView {
           class: "cmm-fold-toggle",
           role: "button",
           tabindex: "0",
-          "aria-label": node.collapsed ? "Expand children" : "Fold children"
+          "aria-label": node.collapsed ? "Expand children" : "Collapse children"
         });
         foldToggle.appendChild(this.svgEl("rect", {
           x: actionCursor - 16,
@@ -3543,6 +4617,7 @@ class KempfSimpleMindMapView extends TextFileView {
     this.applyTransform();
     this.updateToolbarButtons();
     this.updateFocusStatus();
+    this.updateInfoPanel();
   }
 
   clearNodeDropTarget() {
@@ -3570,7 +4645,7 @@ class KempfSimpleMindMapView extends TextFileView {
     const parent = dragged.parentId ? this.getNode(dragged.parentId) : null;
     if (parent && ["asc", "desc"].includes(parent.childSort)) return null;
     const layoutMode = this.getAppearance().layout || "right";
-    const horizontalOrder = ["up", "down"].includes(layoutMode);
+    const horizontalOrder = ["up", "down"].includes(layoutMode) || layoutMode.startsWith("linear-left-") || layoutMode.startsWith("linear-right-") || layoutMode === "staggered-left" || layoutMode === "staggered-right";
     const effectiveScale = Number.isFinite(this.scale) && this.scale > 0 ? this.scale : 1;
     const gapReach = 44 / effectiveScale;
     const crossReach = 32 / effectiveScale;
@@ -3619,7 +4694,7 @@ class KempfSimpleMindMapView extends TextFileView {
     const { position } = candidate;
     const { width, height } = this.nodeDimensions(position.depth);
     const layoutMode = this.getAppearance().layout || "right";
-    const horizontalOrder = ["up", "down"].includes(layoutMode);
+    const horizontalOrder = ["up", "down"].includes(layoutMode) || layoutMode.startsWith("linear-left-") || layoutMode.startsWith("linear-right-") || layoutMode === "staggered-left" || layoutMode === "staggered-right";
     const line = this.svgEl("line", { class: "cmm-insertion-line" });
     if (horizontalOrder) {
       const x = position.x + (candidate.placement === "before" ? -8 : width + 8);
@@ -3631,6 +4706,34 @@ class KempfSimpleMindMapView extends TextFileView {
       line.setAttribute("y1", y); line.setAttribute("y2", y);
     }
     this.scene.appendChild(line);
+  }
+
+  updateDragAutoPan(event) {
+    this.dragAutoPanPointer = { clientX: event.clientX, clientY: event.clientY };
+    if (this.dragAutoPanFrame !== null && this.dragAutoPanFrame !== undefined) return;
+    const tick = () => {
+      this.dragAutoPanFrame = null;
+      if (!this.draggedId || !this.dragAutoPanPointer || !this.viewport) return;
+      const rect = this.viewport.getBoundingClientRect();
+      const localX = this.dragAutoPanPointer.clientX - rect.left;
+      const localY = this.dragAutoPanPointer.clientY - rect.top;
+      const deltaX = dragAutoPanDelta(localX, rect.width);
+      const deltaY = dragAutoPanDelta(localY, rect.height);
+      if (deltaX || deltaY) {
+        this.offsetX += deltaX;
+        this.offsetY += deltaY;
+        this.applyTransform();
+        this.updateNodeDropTarget(this.dragAutoPanPointer);
+      }
+      this.dragAutoPanFrame = window.requestAnimationFrame(tick);
+    };
+    this.dragAutoPanFrame = window.requestAnimationFrame(tick);
+  }
+
+  stopDragAutoPan() {
+    if (this.dragAutoPanFrame !== null && this.dragAutoPanFrame !== undefined) window.cancelAnimationFrame(this.dragAutoPanFrame);
+    this.dragAutoPanFrame = null;
+    this.dragAutoPanPointer = null;
   }
 
   startNodeDrag(event, id, group) {
@@ -3648,24 +4751,32 @@ class KempfSimpleMindMapView extends TextFileView {
         this.draggedId = id;
         group.addClass("is-dragging");
       }
-      if (moved) this.updateNodeDropTarget(moveEvent);
+      if (moved) {
+        this.updateNodeDropTarget(moveEvent);
+        this.updateDragAutoPan(moveEvent);
+      }
     };
-    const up = async (upEvent) => {
-      if (moved) this.updateNodeDropTarget(upEvent);
+    const finish = async (finishEvent, commit) => {
+      if (moved && commit) this.updateNodeDropTarget(finishEvent);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      this.stopDragAutoPan();
       group.removeClass("is-dragging");
       const target = this.dropTargetId;
       const placement = this.dropPlacement;
       this.draggedId = null;
       this.clearNodeDropTarget();
-      if (moved && target) {
+      if (moved && commit && target) {
         if (placement === "before" || placement === "after") await this.reorderSibling(id, target, placement);
         else await this.reparent(id, target);
       }
     };
+    const up = (upEvent) => finish(upEvent, true);
+    const cancel = (cancelEvent) => finish(cancelEvent, false);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
   }
 
   centerMap() {
@@ -3759,10 +4870,20 @@ class KempfSimpleMindMapView extends TextFileView {
   }
 
   async onClose() {
+    if (this.viewportSaveTimer !== null) {
+      window.clearTimeout(this.viewportSaveTimer);
+      this.viewportSaveTimer = null;
+      if (this.invalidSource === null) this.requestSave();
+    }
+    this.viewportPersistenceReady = false;
+    this.stopDragAutoPan();
     this.hideNodeTooltip();
     this.hideNotesPreview();
+    this.hideInfoTooltip();
     this.closeNodeSearch();
     this.closeMobileSheet();
+    this.infoPanel?.remove();
+    this.infoPanel = null;
     if (this.headerRenameHandler && this.containerEl) this.containerEl.removeEventListener("click", this.headerRenameHandler);
     this.headerRenameHandler = null;
   }
@@ -3818,19 +4939,17 @@ class KempfSimpleMindMapSettingsTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    const defaultLayoutSetting = new Setting(containerEl)
       .setName("Default layout")
       .setDesc("Layout used when creating a new .ksmm map. Existing maps keep their own layout.")
-      .addDropdown((dropdown) => {
-        ["right", "left", "down", "up", "radial"].forEach((layout) => {
-          dropdown.addOption(layout, layout.charAt(0).toUpperCase() + layout.slice(1));
-        });
-        dropdown.setValue(this.plugin.data.defaultLayout || "right");
-        dropdown.onChange(async (value) => {
-          this.plugin.data.defaultLayout = value;
+      .addButton((button) => button.setButtonText(`Change… (${layoutLabel(this.plugin.data.defaultLayout)})`).onClick(() => {
+        const appearance = this.plugin.getDefaultAppearance();
+        new LayoutPickerModal(this.app, appearance.layout, appearance, async (layout) => {
+          this.plugin.data.defaultLayout = layout;
           await this.plugin.savePluginData();
-        });
-      });
+          this.display();
+        }).open();
+      }));
 
     new Setting(containerEl)
       .setName("Random colors for new branches")
@@ -3906,6 +5025,40 @@ module.exports = class KempfSimpleMindMapPlugin extends Plugin {
     this.addSettingTab(new KempfSimpleMindMapSettingsTab(this.app, this));
     this.addRibbonIcon("list-tree", "Create The Kempf Simple Mind Map", () => this.createNewMap());
     this.addCommand({ id: "new-kempfs-simple-mind-map", name: "Create new mind map", callback: () => this.createNewMap() });
+    this.addCommand({
+      id: "collapse-all-nodes",
+      name: "Collapse entire map",
+      checkCallback: (checking) => {
+        const view = this.activeMapView();
+        if (!view || !view.collapseActionState().canCollapseMap) return false;
+        if (!checking) view.collapseAll();
+        return true;
+      }
+    });
+    this.addCommand({
+      id: "expand-all-nodes",
+      name: "Expand entire map",
+      checkCallback: (checking) => {
+        const view = this.activeMapView();
+        if (!view || !view.collapseActionState().canExpandMap) return false;
+        if (!checking) view.expandAll();
+        return true;
+      }
+    });
+    this.addCommand({
+      id: "collapse-nodes-to-level",
+      name: "Collapse nodes to level",
+      checkCallback: (checking) => {
+        const view = this.activeMapView();
+        if (!view || !view.collapseActionState().canCollapseToLevel) return false;
+        if (!checking) view.showCollapseToLevel();
+        return true;
+      }
+    });
+  }
+
+  activeMapView() {
+    return this.app.workspace.getActiveViewOfType?.(KempfSimpleMindMapView) || null;
   }
 
   async savePluginData() { await this.saveData(this.data); }
@@ -4004,7 +5157,8 @@ module.exports = class KempfSimpleMindMapPlugin extends Plugin {
       ...(mobile ? [] : ["Hover over a shortened title to see the full name. This can be turned off in plugin settings."])
     ]);
     section("Manage branches", [], [
-      mobile ? "Tap the minus or numbered badge to fold or unfold a branch." : "Click the minus or numbered badge to fold or unfold a branch. Space does the same for the selected node.",
+      mobile ? "Tap the minus or numbered badge to collapse or expand a node's children." : "Click the minus or numbered badge to collapse or expand a node's children. Space does the same for the selected node.",
+      "Use Expand and collapse for local branch controls, or to collapse or expand the entire map.",
       "Focus branch shows only the selected branch and its path back to the central idea.",
       "A locked branch displays a padlock and is protected from accidental changes until you unlock it.",
       "Choose a node color to create a manual color override. Inheriting descendants follow it, while descendants with their own manual colors stay unchanged.",
@@ -4012,7 +5166,10 @@ module.exports = class KempfSimpleMindMapPlugin extends Plugin {
     ]);
     section("Change the look", [], [
       "Open Map Settings from the toolbar or by right-clicking empty space.",
-      "Choose a light or dark background, a highlight color, and a right, left, down, up, or radial layout.",
+      "Choose the Obsidian, Dark, or Paper background, a highlight color, and a standard, staggered, or linear layout.",
+      "Staggered layouts extend one central trunk left, right, up, or down and alternate complete first-level branches from side to side.",
+      "Linear layouts arrange nodes in sequence with deeper levels indented. Either axis can control the sequence while the other controls the branch direction.",
+      "Choose Change layout to open the visual picker. Select a layout family, set its direction, inspect the preview, and apply it.",
       "Adjust level spacing, sibling spacing, node padding, and connector spacing while watching the live preview.",
       "Dim unrelated branches to make the selected branch easier to follow."
     ]);
@@ -4061,7 +5218,7 @@ module.exports = class KempfSimpleMindMapPlugin extends Plugin {
     return {
       background: normalizeBackground(this.data.backgroundTheme || this.data.theme),
       highlight: this.data.highlightColor || "blue",
-      layout: ["right", "left", "down", "up", "radial"].includes(this.data.defaultLayout) ? this.data.defaultLayout : "right",
+      layout: normalizeLayout(this.data.defaultLayout),
       randomBranchColors: this.data.randomBranchColors === true
     };
   }
@@ -4080,7 +5237,7 @@ module.exports = class KempfSimpleMindMapPlugin extends Plugin {
   }
 
   async createNewMap() {
-    new NodeEditorModal(this.app, this, "Create mind map", { text: "Central idea", notes: "" }, async (centralNodeText, centralNodeNotes) => {
+    new CreateMindMapModal(this.app, this, async (centralNodeText, centralNodeNotes, templateId) => {
       const parentPath = this.pluginFolderPath();
       const baseName = "Untitled mind map";
       let counter = 0;
@@ -4091,7 +5248,7 @@ module.exports = class KempfSimpleMindMapPlugin extends Plugin {
         counter += 1;
       } while (this.app.vault.getAbstractFileByPath(path));
 
-      const map = createBlankMap(this.getDefaultAppearance(), centralNodeText, centralNodeNotes);
+      const map = createMapFromTemplate(templateId, this.getDefaultAppearance(), centralNodeText, centralNodeNotes);
       const file = await this.app.vault.create(path, JSON.stringify(map, null, 2));
       const leaf = this.app.workspace.getLeaf("tab");
       await leaf.openFile(file);
